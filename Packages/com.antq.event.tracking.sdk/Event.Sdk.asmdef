@@ -1,0 +1,17 @@
+{
+    "name": "Event.Sdk",
+    "rootNamespace": "",
+    "references": [
+        "GUID:1e995d05e0656b64ab721f1837984e85",
+        "GUID:50757a2d4eb920f4e8e5acda38d2b179"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

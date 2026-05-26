@@ -1,0 +1,30 @@
+{
+  "name": "com.antq.ads.fb.af.iap.sdk",
+  "version": "1.1.4",
+  "displayName": "ADS FB AF IAP SDK",
+  "description": "Unity SDK t\u00edch h\u1ee3p qu\u1ea3ng c\u00e1o (AdMob, MAX, IronSource), Firebase Analytics, AppsFlyer v\u00e0 In-App Purchase",
+  "unity": "6000.0",
+  "keywords": [
+    "ads",
+    "advertisement",
+    "firebase",
+    "appsflyer",
+    "iap",
+    "in-app-purchase",
+    "mediation",
+    "admob",
+    "max",
+    "ironsource"
+  ],
+  "author": {
+    "name": "An Trinh",
+    "email": "antq@abigames.com.vn"
+  },
+  "samples": [
+    {
+      "displayName": "Base Setup",
+      "description": "C\u00e1c prefabs v\u00e0 scripts m\u1eabu \u0111\u1ec3 setup SDK",
+      "path": "Samples~/BaseSetup"
+    }
+  ]
+}
