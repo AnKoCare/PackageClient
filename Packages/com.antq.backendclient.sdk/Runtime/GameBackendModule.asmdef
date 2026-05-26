@@ -1,0 +1,19 @@
+{
+    "name": "GameBackendModule",
+    "rootNamespace": "GameBackendModule",
+    "references": [
+        "Zenject",
+        "Unity.Addressables",
+        "Unity.TextMeshPro",
+        "Unity.ugui"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

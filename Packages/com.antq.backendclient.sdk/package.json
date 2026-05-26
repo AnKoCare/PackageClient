@@ -1,0 +1,15 @@
+{
+  "name": "com.antq.backendclient.sdk",
+  "version": "1.0.1",
+  "displayName": "BackendClient",
+  "description": "Unity SDK t\u00edch h\u1ee3p Backend",
+  "unity": "6000.0",
+  "keywords": [
+    "backend"
+  ],
+  "author": {
+    "name": "An Trinh",
+    "email": "antq@abigames.com.vn"
+  },
+  "_fingerprint": "0c668796465888b4251ddbc7f32fb4f8e4f691b9"
+}
