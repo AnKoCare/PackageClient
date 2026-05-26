@@ -12,7 +12,7 @@
       "hash": "2053ef5c23f2ae755dd85d5865b698c542c351b6"
     },
     "com.antq.ads.fb.af.iap.sdk": {
-      "version": "file:com.antq.ads.fb.af.iap.sdk",
+      "version": "file:GameSDK",
       "depth": 0,
       "source": "embedded",
       "dependencies": {}
@@ -24,7 +24,7 @@
       "dependencies": {}
     },
     "com.antq.event.tracking.sdk": {
-      "version": "file:com.antq.event.tracking.sdk",
+      "version": "file:EventTracking",
       "depth": 0,
       "source": "embedded",
       "dependencies": {}
