@@ -1,7 +1,7 @@
 {
   "dependencies": {
     "com.antq.backendclient.sdk": {
-      "version": "file:com.antq.backendclient.sdk",
+      "version": "file:BackendClient",
       "depth": 0,
       "source": "embedded",
       "dependencies": {}

@@ -257,6 +257,7 @@ namespace GameBackendModule.Models
         public string weekId;
         public int finalRank;
         public int finalScore;
+        public WeeklyContestLeaderboardEntry[] leaderboard;
     }
 
     /// <summary>GET /weekly-contest/status.</summary>
