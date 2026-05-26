@@ -1,3 +1,3 @@
 # BackendClient
 
-Install package: ttps://github.com/AnKoCare/BackendClient.git?path=Packages/<packagename>
+Install package: https://github.com/AnKoCare/BackendClient.git?path=Packages/<packagename>
