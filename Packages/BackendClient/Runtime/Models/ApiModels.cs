@@ -27,6 +27,13 @@ namespace GameBackendModule.Models
         /// Null với các endpoint khác — client nên branch theo field này thay vì so chuỗi message.
         /// </summary>
         public string code;
+
+        /// <summary>
+        /// Chỉ có ở lỗi 409 của cloud save (code = SAVE_CONFLICT): tóm tắt bản
+        /// đang nằm trên cloud, đủ để hiện popup cho người chơi chọn mà không
+        /// phải gọi thêm request.
+        /// </summary>
+        public CloudSaveMetaResponse cloud;
     }
 
     // Generic helpers
@@ -103,6 +110,14 @@ namespace GameBackendModule.Models
         public string refreshToken;
         public UserData user;
         public AuthPlayerPayload player;
+
+        /// <summary>
+        /// Tóm tắt bản save trên cloud, server gắn kèm mỗi lần đăng nhập /
+        /// refresh. Nhờ vậy lúc mở game client không phải gọi thêm request nào để
+        /// biết cloud đang có gì. `exists=false` nghĩa là cloud chưa có save.
+        /// </summary>
+        public CloudSaveMetaResponse cloudSave;
+
         public string serverTimeUtc;
     }
 

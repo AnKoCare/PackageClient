@@ -19,6 +19,17 @@ namespace GameBackendModule.Models
         public const string PLAYER_INFO_ENDPOINT = "/api/v1/player/info";
         public const string PLAYER_COUNTRY_ENDPOINT = "/api/v1/player/country";
         public const string PLAYER_SAVE_ENDPOINT = "/api/v1/player/save";
+
+        // Cloud save (Bearer JWT — docs/CLOUD_SAVE_ANDROID_PLAN.md).
+        // Khác PLAYER_SAVE_ENDPOINT ở chỗ server cấp version và kiểm tra baseVersion.
+        /// <summary>GET tóm tắt bản cloud (không kèm data). Lúc mở game thì dùng AuthResponse.cloudSave thay vì gọi cái này.</summary>
+        public const string PLAYER_CLOUD_SAVE_META_ENDPOINT = "/api/v1/player/cloud-save/meta";
+        /// <summary>GET cả bản save; POST ghi có kiểm tra baseVersion (lệch → 409 kèm cloud).</summary>
+        public const string PLAYER_CLOUD_SAVE_ENDPOINT = "/api/v1/player/cloud-save";
+        /// <summary>POST — người chơi chọn giữ bản trên máy hay bản cloud.</summary>
+        public const string PLAYER_CLOUD_SAVE_RESOLVE_ENDPOINT = "/api/v1/player/cloud-save/resolve";
+        /// <summary>POST — gắn Play Games ID vào tài khoản đang đăng nhập.</summary>
+        public const string AUTH_LINK_GPG_ENDPOINT = "/api/v1/auth/link-gpg";
         public const string DELETE_PLAYER_ENDPOINT = "/api/v1/player/{0}";
 
         /// <summary>POST purge-by-uid — Bearer JWT (chủ tài khoản hoặc admin).</summary>
