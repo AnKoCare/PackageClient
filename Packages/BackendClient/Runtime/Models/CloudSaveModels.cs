@@ -19,8 +19,20 @@ namespace GameBackendModule.Models
         public string device;
         public int iap;
 
+        /// <summary>
+        /// Avatar/khung/huy hiệu đang đeo của bản save, để popup khôi phục vẽ đúng mặt
+        /// người chơi trên máy kia. Mặc định -1 = bản save cũ không mang thông tin này
+        /// (JsonUtility giữ nguyên giá trị khởi tạo khi field vắng mặt trong JSON).
+        /// </summary>
+        public int avatar = -1;
+        public int frame = -1;
+        public int badge = -1;
+
         public bool HasValue =>
             level > 0 || coin > 0 || iap > 0 || !string.IsNullOrEmpty(device);
+
+        /// <summary>Bản save có mang avatar/khung không.</summary>
+        public bool HasProfile => avatar >= 0 || frame >= 0;
     }
 
     /// <summary>Trạng thái bản save trên cloud, không kèm dữ liệu save.</summary>
