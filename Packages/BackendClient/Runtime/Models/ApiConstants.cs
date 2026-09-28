@@ -135,5 +135,11 @@ namespace GameBackendModule.Models
         public const string CONTENT_TYPE_HEADER = "Content-Type";
         public const string CONTENT_TYPE_JSON = "application/json";
         public const string BEARER_PREFIX = "Bearer ";
+
+        /// <summary>
+        /// Phiên bản app (Application.version) gắn vào mọi request. Server chặn bản game
+        /// cũ tải bản cloud save do bản mới hơn ghi — xem CloudSaveService.assertClientCanRead.
+        /// </summary>
+        public const string APP_VERSION_HEADER = "X-App-Version";
     }
 }

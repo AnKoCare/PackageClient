@@ -28,6 +28,20 @@ namespace GameBackendModule.Models
         public int frame = -1;
         public int badge = -1;
 
+        /// <summary>
+        /// Phiên bản app đã ghi bản save này (<c>Application.version</c>, ví dụ "1.0.51").
+        /// Rỗng = save do bản cũ ghi, không chặn ai. Bản game cũ hơn giá trị này không
+        /// được tải bản save về: server trả 426, và client cũng tự chặn trước khi gọi.
+        /// </summary>
+        public string appVersion;
+
+        /// <summary>
+        /// Máy nào đã ghi bản save này. Khác <see cref="device"/> (chỉ là tên model):
+        /// đây là mã sinh một lần mỗi lần cài, nên so được "bản trên cloud có phải của
+        /// chính máy này không" để khỏi hiểu nhầm thành xung đột hai máy.
+        /// </summary>
+        public string installId;
+
         public bool HasValue =>
             level > 0 || coin > 0 || iap > 0 || !string.IsNullOrEmpty(device);
 
@@ -137,6 +151,12 @@ namespace GameBackendModule.Models
 
         /// <summary>Mã trong ErrorResponse.code khi bản trên cloud đã đổi (HTTP 409).</summary>
         public const string ERR_SAVE_CONFLICT = "SAVE_CONFLICT";
+
+        /// <summary>
+        /// Mã trong ErrorResponse.code khi bản save do một bản game mới hơn ghi
+        /// (HTTP 426). Phải cập nhật game rồi mới tải về được.
+        /// </summary>
+        public const string ERR_CLIENT_OUTDATED = "CLIENT_OUTDATED";
 
         public const string KEEP_LOCAL = "local";
         public const string KEEP_CLOUD = "cloud";

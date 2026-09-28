@@ -32,6 +32,27 @@ namespace GameBackendModule.Services
         private string authToken;
         private readonly string baseUrl;
 
+        /// <summary>
+        /// Phiên bản app gắn vào mọi request (header <c>X-App-Version</c>). Server dùng nó
+        /// để không trả bản cloud save do một bản game mới hơn ghi — bản cũ đọc vào là
+        /// hỏng dữ liệu. Đọc một lần vì <c>Application.version</c> chỉ gọi được trên
+        /// main thread.
+        /// </summary>
+        private static string appVersion;
+
+        private static string AppVersion
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(appVersion))
+                {
+                    try { appVersion = Application.version; }
+                    catch { appVersion = string.Empty; }
+                }
+                return appVersion;
+            }
+        }
+
         public ApiClient(string baseUrl = ApiConstants.BASE_URL)
         {
             this.baseUrl = baseUrl;
@@ -96,7 +117,8 @@ namespace GameBackendModule.Services
             // Set headers
             request.SetRequestHeader(ApiConstants.CONTENT_TYPE_HEADER, ApiConstants.CONTENT_TYPE_JSON);
             request.SetRequestHeader("Accept", ApiConstants.CONTENT_TYPE_JSON);
-            
+            request.SetRequestHeader(ApiConstants.APP_VERSION_HEADER, AppVersion);
+
             if (!string.IsNullOrEmpty(authToken))
             {
                 request.SetRequestHeader(ApiConstants.AUTHORIZATION_HEADER, ApiConstants.BEARER_PREFIX + authToken);
@@ -265,6 +287,7 @@ namespace GameBackendModule.Services
 
             request.SetRequestHeader(ApiConstants.CONTENT_TYPE_HEADER, ApiConstants.CONTENT_TYPE_JSON);
             request.SetRequestHeader("Accept", ApiConstants.CONTENT_TYPE_JSON);
+            request.SetRequestHeader(ApiConstants.APP_VERSION_HEADER, AppVersion);
 
             if (!string.IsNullOrEmpty(authToken))
             {

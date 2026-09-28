@@ -67,6 +67,18 @@ namespace GameBackendModule.Services
                        || string.Equals(error.code, CloudSaveConstants.ERR_SAVE_CONFLICT, StringComparison.Ordinal));
         }
 
+        /// <summary>
+        /// True khi server từ chối trả bản save vì nó do một bản game MỚI HƠN ghi
+        /// (426 Upgrade Required). Bản đang chạy đọc vào sẽ hỏng dữ liệu, nên chỉ
+        /// còn cách cập nhật game rồi tải lại.
+        /// </summary>
+        public static bool IsClientOutdated(ErrorResponse error)
+        {
+            return error != null
+                   && (error.statusCode == 426
+                       || string.Equals(error.code, CloudSaveConstants.ERR_CLIENT_OUTDATED, StringComparison.Ordinal));
+        }
+
         public IEnumerator GetMeta(Action<ApiResponse<CloudSaveMetaResponse>> onSuccess, Action<ErrorResponse> onError)
         {
             yield return apiClient.Get(ApiConstants.PLAYER_CLOUD_SAVE_META_ENDPOINT, onSuccess, onError);
