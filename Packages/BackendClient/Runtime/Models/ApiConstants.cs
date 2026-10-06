@@ -30,6 +30,7 @@ namespace GameBackendModule.Models
         public const string PLAYER_CLOUD_SAVE_RESOLVE_ENDPOINT = "/api/v1/player/cloud-save/resolve";
         /// <summary>POST — gắn Play Games ID vào tài khoản đang đăng nhập.</summary>
         public const string AUTH_LINK_GPG_ENDPOINT = "/api/v1/auth/link-gpg";
+        public const string AUTH_LINK_GAMECENTER_ENDPOINT = "/api/v1/auth/link-gamecenter";
         public const string DELETE_PLAYER_ENDPOINT = "/api/v1/player/{0}";
 
         /// <summary>POST purge-by-uid — Bearer JWT (chủ tài khoản hoặc admin).</summary>

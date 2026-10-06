@@ -173,7 +173,16 @@ namespace GameBackendModule.Models
         /// <summary>Play Games ID thuộc tài khoản khác — hỏi người chơi giữ bản nào.</summary>
         public const string LINK_CONFLICT = "conflict";
 
-        /// <summary>Tài khoản này đã gắn một Play Games ID khác — bỏ qua.</summary>
+        /// <summary>
+        /// Tài khoản này đã gắn một ID khác của CÙNG nền tảng — bỏ qua. Tên còn chữ "gpg"
+        /// vì ra đời trước khi có iOS; link-gamecenter cũng trả đúng chuỗi này.
+        /// </summary>
         public const string LINK_USER_HAS_OTHER_GPG = "user_has_other_gpg";
+
+        /// <summary>Provider của Google Play Games (Android).</summary>
+        public const string PROVIDER_GPG = "gpg";
+
+        /// <summary>Provider của Game Center (iOS).</summary>
+        public const string PROVIDER_GAMECENTER = "gamecenter";
     }
 }

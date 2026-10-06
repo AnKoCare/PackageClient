@@ -48,6 +48,15 @@ namespace GameBackendModule.Services
         /// một phần của luồng cloud save; đường đăng nhập cũ không đổi.
         /// </summary>
         IEnumerator LinkGpg(LinkGpgRequest request, Action<ApiResponse<LinkGpgResponse>> onSuccess, Action<ErrorResponse> onError);
+
+        /// <summary>
+        /// Gắn ID của nền tảng (Play Games trên Android, Game Center trên iOS) vào tài
+        /// khoản đang đăng nhập. <paramref name="provider"/> là
+        /// <see cref="CloudSaveConstants.PROVIDER_GPG"/> hoặc
+        /// <see cref="CloudSaveConstants.PROVIDER_GAMECENTER"/>; request và response dùng
+        /// chung một dạng với <see cref="LinkGpg"/>.
+        /// </summary>
+        IEnumerator LinkPlatform(string provider, LinkGpgRequest request, Action<ApiResponse<LinkGpgResponse>> onSuccess, Action<ErrorResponse> onError);
     }
 
     public class CloudSaveService : ICloudSaveService
@@ -147,6 +156,32 @@ namespace GameBackendModule.Services
 
             request.externalId = request.externalId.Trim();
             yield return apiClient.Post(ApiConstants.AUTH_LINK_GPG_ENDPOINT, request, onSuccess, onError);
+        }
+
+        public IEnumerator LinkPlatform(string provider, LinkGpgRequest request, Action<ApiResponse<LinkGpgResponse>> onSuccess, Action<ErrorResponse> onError)
+        {
+            string endpoint;
+            switch (provider)
+            {
+                case CloudSaveConstants.PROVIDER_GPG:
+                    endpoint = ApiConstants.AUTH_LINK_GPG_ENDPOINT;
+                    break;
+                case CloudSaveConstants.PROVIDER_GAMECENTER:
+                    endpoint = ApiConstants.AUTH_LINK_GAMECENTER_ENDPOINT;
+                    break;
+                default:
+                    onError?.Invoke(BadRequest("unsupported provider: " + provider));
+                    yield break;
+            }
+
+            if (request == null || string.IsNullOrEmpty(request.externalId))
+            {
+                onError?.Invoke(BadRequest("externalId is required"));
+                yield break;
+            }
+
+            request.externalId = request.externalId.Trim();
+            yield return apiClient.Post(endpoint, request, onSuccess, onError);
         }
 
         private static bool IsNumeric(string value)
