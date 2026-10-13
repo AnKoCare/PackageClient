@@ -89,6 +89,42 @@ namespace GameBackendModule.Models
         public int TotalLeaguePoint;
         /// <summary>LeaguePoint cao nhất từng đạt trong MỘT mùa Royal League.</summary>
         public int HighestLeaguePoint;
+
+        // ─── Bậc danh hiệu League (cờ đỏ / Emerald / Diamond) ──────────────────
+        //
+        // Bậc tính theo ĐIỂM CHU KỲ: tổng LeaguePoint trong một chu kỳ gồm nhiều mùa,
+        // hết chu kỳ thì về 0 (khác TotalLeaguePoint không bao giờ reset).
+
+        /// <summary>
+        /// Chu kỳ mà <see cref="CycleLeaguePoint"/> thuộc về — client tự ghi lên.
+        /// 0 = hồ sơ của client cũ, chưa theo dõi chu kỳ.
+        /// </summary>
+        public int LeagueCycle;
+
+        /// <summary>
+        /// Điểm chu kỳ. Trên dữ liệu server trả về cho NGƯỜI KHÁC xem (bảng League, hồ
+        /// sơ theo uid) thì đã được quy về chu kỳ hiện hành: hồ sơ còn mang điểm của chu
+        /// kỳ cũ ra 0. Bảng xếp hạng thế giới KHÔNG gửi field này — số dưới cúp ở đó là
+        /// <see cref="TotalLeaguePoint"/>, vốn được server ghi đè bằng cột xếp hạng.
+        /// </summary>
+        public int CycleLeaguePoint;
+
+        /// <summary>Bậc đã chốt ở chu kỳ liền trước <see cref="LeagueCycle"/> — mức sàn của bậc hiện tại.</summary>
+        public int PrevCycleTier;
+
+        /// <summary>
+        /// Bậc danh hiệu server đã tính sẵn cho hồ sơ này: 0 = cờ đỏ, 1 = Emerald,
+        /// 2 = Diamond. Chỉ có trên dữ liệu trả về, client không gửi lên. Vắng mặt (0)
+        /// trên dữ liệu cache từ trước khi server hỗ trợ.
+        /// </summary>
+        public int LeagueTier;
+
+        /// <summary>
+        /// Số mùa League người này đứng hạng 1 bảng của mình. Server đếm từ kết quả các
+        /// mùa đã chốt và chỉ gắn vào hồ sơ xem theo uid (<c>GetProfileByUid</c>); client
+        /// không gửi lên. Số của chính mình lấy từ <c>RoyalLeagueStatusResponse.leaguesWon</c>.
+        /// </summary>
+        public int LeaguesWon;
     }
 
     /// <summary>Player kèm auth (register / external-login).</summary>
@@ -549,8 +585,16 @@ namespace GameBackendModule.Models
         public string lastActiveAt;
         /// <summary>F4 — level live từ players.info.Level.</summary>
         public int level;
-        /// <summary>Crown lũy kế (players.info.TotalLeaguePoint), snapshot trên team_members.</summary>
+        /// <summary>
+        /// Điểm League của thành viên, snapshot trên team_members — con số hiện dưới cúp
+        /// và là số server cộng vào điểm team.
+        /// </summary>
         public int leaguePoint;
+        /// <summary>
+        /// Bậc danh hiệu server đã tính sẵn (0 = cờ đỏ, 1 = Emerald, 2 = Diamond).
+        /// Vắng mặt (0) khi server chưa gửi — client tự tính từ <see cref="leaguePoint"/>.
+        /// </summary>
+        public int leagueTier;
         /// <summary>F4 — tổng số lần giúp đồng đội.</summary>
         public int contribution;
         public TeamUserRef user;

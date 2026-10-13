@@ -63,6 +63,12 @@ namespace GameBackendModule.Models
         public string serverTime;
         public RoyalLeagueCurrentSeason current;
         public RoyalLeaguePendingResult pending;
+        /// <summary>
+        /// Số mùa người chơi đứng hạng 1 bảng của mình, server đếm từ kết quả đã chốt —
+        /// mùa đang nằm trong <see cref="pending"/> đã được tính. Lấy số LỚN HƠN giữa số
+        /// đang giữ và số này, đừng tự cộng. 0 trên server chưa hỗ trợ.
+        /// </summary>
+        public int leaguesWon;
     }
 
     // ─── POST /royal-league/join ─────────────────────────────────────────────
