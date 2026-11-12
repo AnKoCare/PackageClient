@@ -22,6 +22,112 @@ public class Purchaser : Singleton<Purchaser>
     private readonly PurchaserCallbacks purchaserCallbacks;
     private bool IsPurchaseInProgress => m_IAPProduct != null;
 
+    public const string k_StoreUnavailableMessage =
+        "Store is unavailable. Please check your internet connection and try again.";
+
+    // --- Transaction idempotency ---------------------------------------------
+    // Persisted set of transaction ids we have already delivered. The store may
+    // re-deliver a pending/deferred transaction (Pix, boleto, Ask-to-Buy,
+    // interrupted purchases) across sessions; this guarantees we never grant the
+    // same purchase twice.
+    private const string k_ProcessedTxPrefKey = "iap_processed_tx_v1";
+    private const int k_MaxProcessedTx = 300;
+    private List<string> m_ProcessedTransactions;
+
+    private void EnsureProcessedTransactionsLoaded()
+    {
+        if (m_ProcessedTransactions != null) return;
+        m_ProcessedTransactions = new List<string>();
+        string raw = PlayerPrefs.GetString(k_ProcessedTxPrefKey, string.Empty);
+        if (string.IsNullOrEmpty(raw)) return;
+        foreach (string id in raw.Split('|'))
+        {
+            if (!string.IsNullOrEmpty(id)) m_ProcessedTransactions.Add(id);
+        }
+    }
+
+    // The store only exposes a usable TransactionID on the PendingOrder; on the
+    // ConfirmedOrder it is empty. We capture it at the pending stage keyed by
+    // product id so the confirm stage can use it for idempotency.
+    private readonly Dictionary<string, string> m_PendingTxByProduct = new Dictionary<string, string>();
+
+    public void StashPendingTransaction(string productId, string transactionId)
+    {
+        if (string.IsNullOrEmpty(productId) || string.IsNullOrEmpty(transactionId)) return;
+        m_PendingTxByProduct[productId] = transactionId;
+    }
+
+    public string PopPendingTransaction(string productId)
+    {
+        if (string.IsNullOrEmpty(productId)) return null;
+        if (m_PendingTxByProduct.TryGetValue(productId, out string txId))
+        {
+            m_PendingTxByProduct.Remove(productId);
+            return txId;
+        }
+        return null;
+    }
+
+    // Returns true if this transaction has NOT been delivered before (and marks
+    // it as delivered). Returns false if it was already delivered, so callers
+    // should skip granting. Empty/unknown ids are always allowed through.
+    public bool TryBeginDeliverTransaction(string transactionId)
+    {
+        if (string.IsNullOrEmpty(transactionId)) return true;
+        EnsureProcessedTransactionsLoaded();
+        if (m_ProcessedTransactions.Contains(transactionId)) return false;
+
+        m_ProcessedTransactions.Add(transactionId);
+        if (m_ProcessedTransactions.Count > k_MaxProcessedTx)
+        {
+            m_ProcessedTransactions.RemoveRange(0, m_ProcessedTransactions.Count - k_MaxProcessedTx);
+        }
+        PlayerPrefs.SetString(k_ProcessedTxPrefKey, string.Join("|", m_ProcessedTransactions));
+        PlayerPrefs.Save();
+        return true;
+    }
+
+    // --- One-time backlog reconciliation -------------------------------------
+    // When a user updates from an older build that already delivered a purchase
+    // but left the store transaction unfinished, the store re-delivers that
+    // transaction to this build as a fetched pending order. Because the
+    // idempotency store above is empty for pre-fix purchases, the item would be
+    // granted a SECOND time. To prevent that, on the first launch of this build
+    // we stop auto-processing fetched pending orders, then silently finish the
+    // pre-existing ones without granting (they were already delivered by the old
+    // build) and mark them processed. This runs exactly once per device.
+    private const string k_BacklogReconciledKey = "iap_backlog_reconciled_v1";
+
+    public bool IsBacklogReconciled => PlayerPrefs.GetInt(k_BacklogReconciledKey, 0) == 1;
+
+    public void SetProcessFetchedPendingOrders(bool value)
+    {
+        m_PurchasingService?.ProcessPendingOrdersOnPurchasesFetched(value);
+    }
+
+    // Mark a pre-fix (already delivered) transaction so the confirm callback it
+    // triggers will be skipped, and remember its id per product for correlation.
+    public void MarkBacklogTransactionAsDelivered(string productId, string transactionId)
+    {
+        StashPendingTransaction(productId, transactionId);
+        TryBeginDeliverTransaction(transactionId);
+    }
+
+    public void ConfirmBacklogOrder(PendingOrder order)
+    {
+        ConfirmOrder(order);
+    }
+
+    public void MarkBacklogReconciled()
+    {
+        PlayerPrefs.SetInt(k_BacklogReconciledKey, 1);
+        PlayerPrefs.Save();
+        // Restore normal behaviour: from now on, fetched pending orders (e.g. a
+        // deferred Pix/boleto purchase that settles in a later session) are
+        // processed and delivered as usual.
+        SetProcessFetchedPendingOrders(true);
+    }
+
     public Purchaser()
     {
         purchaserCallbacks = new PurchaserCallbacks(this);
@@ -41,19 +147,39 @@ public class Purchaser : Singleton<Purchaser>
         InitCatalog();
         InitializeIapService();
         CreateCrossPlatformValidator();
+
+        // On the first launch after updating to this build, do NOT auto-process
+        // fetched pending orders. Any that come back are pre-fix purchases the
+        // old build already delivered; OnExistingPurchasesFetched reconciles them
+        // (finish without granting) so the user is not given items twice.
+        if (!IsBacklogReconciled)
+        {
+            SetProcessFetchedPendingOrders(false);
+        }
+
         ConnectToStore();
     }
 
     private void InitCatalog()
     {
         List<ProductDefinition> initialProductsToFetch = new List<ProductDefinition>();
-        // List<ShopPackageDataConfig> shopPackages = ShopGlobalConfig.Instance.shopPackages;
-        // for (int i = 0; i < shopPackages.Count; i++)
-        // {
-        //     if (shopPackages[i].priceType != PriceType.IAP) continue;
-        //     initialProductsToFetch.Add(new ProductDefinition(shopPackages[i].packageId,
-        //         shopPackages[i].nonConsume ? ProductType.NonConsumable : ProductType.Consumable));
-        // }
+        List<ShopPackageDataConfig> shopPackages = ShopGlobalConfig.Instance.shopPackages;
+        for (int i = 0; i < shopPackages.Count; i++)
+        {
+            if (shopPackages[i].priceType != PriceType.IAP) continue;
+            initialProductsToFetch.Add(new ProductDefinition(shopPackages[i].packageId,
+                shopPackages[i].consumable ? ProductType.Consumable : ProductType.NonConsumable));
+        }
+
+        // SKU thêm của game (vd. Play Games Rewards): phải có trong catalog thì giao dịch phần thưởng mới được trả về.
+        var extraProductIds = SDK.SDKGameHooks.GetExtraConsumableProductIds?.Invoke();
+        if (extraProductIds != null)
+        {
+            foreach (string extraProductId in extraProductIds)
+            {
+                initialProductsToFetch.Add(new ProductDefinition(extraProductId, ProductType.Consumable));
+            }
+        }
 
         // Here are the definition of your catalog products.
         // You can modify or add products here matching the skuIds you define on your different platforms stores.
@@ -113,14 +239,28 @@ public class Purchaser : Singleton<Purchaser>
         m_PurchasingService.FetchPurchases();
     }
 
-    public void RestorePurchases()
+    public void RestorePurchases(Action<bool, string> onComplete = null)
     {
-        m_PurchasingService.RestoreTransactions(OnTransactionsRestored);
+        // The store may not be connected yet (cold start, no network). Calling
+        // through would only get "Store not connected." back from the service,
+        // so report it to the caller in the same shape as a real failure.
+        if (m_PurchasingService == null)
+        {
+            OnTransactionsRestored(false, "Purchase service not ready.");
+            onComplete?.Invoke(false, "Purchase service not ready.");
+            return;
+        }
+
+        m_PurchasingService.RestoreTransactions((success, error) =>
+        {
+            OnTransactionsRestored(success, error);
+            onComplete?.Invoke(success, error);
+        });
     }
 
     private void OnTransactionsRestored(bool success, string error)
     {
-        PurchaserLogger.Log("Transactions restored: " + success);
+        PurchaserLogger.Log($"Transactions restored: {success} - {error}");
     }
 
     public static bool IsReceiptAvailable(Orders existingOrders)
@@ -192,6 +332,11 @@ public class Purchaser : Singleton<Purchaser>
     {
         if (IsPurchaseInProgress) return;
         m_IAPProduct = product;
+        // Show the block BEFORE starting the purchase. Offline, the failure is
+        // reported synchronously inside InitiatePurchase (products not fetched
+        // yet, or IAP's StoreNotConnected), so its HideLoadingBlock must run
+        // after this Show — otherwise the block stays up until the app restarts.
+        SDK.SDKGameHooks.ShowLoadingBlock?.Invoke();
         InitiatePurchase(product);
         // ActivityBlockContext.Events.WaitForPurchase?.Invoke(true);
     }
@@ -201,12 +346,20 @@ public class Purchaser : Singleton<Purchaser>
         Product product = FindProduct(iapProduct.ProductId);
         if (product != null)
         {
+            // Popup thanh toan cua store lam app pause -> khong duoc tinh la banner tu redirect
+            SDK.BannerRedirectGuard.MarkExpectedAppLeave();
             m_PurchasingService?.PurchaseProduct(product);
         }
         else
         {
             PurchaserLogger.Log($"The product service has no product with the ID {iapProduct.ProductId}");
+            // Usually offline at launch (the product fetch is still retrying).
+            // Report it like a store failure so callers release their own
+            // purchasing lock (e.g. Colony Pass isPurchasing).
+            iapProduct.OnFail?.Invoke();
             m_IAPProduct = null;
+            SDK.SDKGameHooks.HideLoadingBlock?.Invoke();
+            SDK.SDKGameHooks.ShowError?.Invoke(k_StoreUnavailableMessage);
             // ActivityBlockContext.Events.WaitForPurchase?.Invoke(false);
         }
     }

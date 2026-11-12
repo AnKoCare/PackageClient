@@ -58,7 +58,7 @@ namespace SDK.Analytics
                 { "ad_source", impressionData.ad_source ?? "unknown" },
                 { "ad_unit_name", impressionData.ad_unit_name ?? "unknown" },
                 { "ad_format", impressionData.ad_format ?? "unknown" },
-                { "value", impressionData.ad_revenue.ToString() },
+                { "value", impressionData.ad_revenue.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                 { "currency", "USD" }
             };
             AppsFlyerManager.TrackAdImpression(eventValue);

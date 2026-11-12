@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
 using SDK.Analytics;
 using UnityEngine;
 using Sirenix.OdinInspector;
@@ -11,18 +12,25 @@ namespace SDK {
     public class MaxMediationController : AdsMediationController
     {
 #if UNITY_AD_MAX
+        private const float LOAD_AD_TIMEOUT_SECONDS = 30f;
+        private const float LOAD_AD_FIRST_DELAY_SECONDS = 1f;
+
         public MaxAdSetup m_MaxAdConfig;
         [FoldoutGroup("Rewarded")] [ShowInInspector] private Dictionary<string, bool> m_RewardedReadyMap = new Dictionary<string, bool>();
         [FoldoutGroup("Rewarded")] [ShowInInspector] private List<string> m_RewardedOrder = new List<string>();
         [FoldoutGroup("Rewarded")] [ShowInInspector] private int m_CurrentLoadingIndexReward = 0;
         [FoldoutGroup("Rewarded")] [ShowInInspector] private bool isWaitLoadRewardedUntilAvailable = false;
         [FoldoutGroup("Rewarded")] [ShowInInspector] private double revenueRewarded = 0;
+        private CancellationTokenSource m_RewardedLoadTimeoutCts;
+        private string m_CurrentLoadingRewardedAdUnitId;
 
         [FoldoutGroup("Interstitial")] [ShowInInspector] private Dictionary<string, bool> m_InterstitialReadyMap = new Dictionary<string, bool>();
         [FoldoutGroup("Interstitial")] [ShowInInspector] private List<string> m_InterstitialOrder = new List<string>();
         [FoldoutGroup("Interstitial")] [ShowInInspector] private int m_CurrentLoadingIndexInterstitial = 0;
         [FoldoutGroup("Interstitial")] [ShowInInspector] private bool isWaitLoadInterstitialUntilAvailable = false;
         [FoldoutGroup("Interstitial")] [ShowInInspector] private double revenueInterstitial = 0;
+        private CancellationTokenSource m_InterstitialLoadTimeoutCts;
+        private string m_CurrentLoadingInterstitialAdUnitId;
 
         public override void Init()
         {
@@ -31,11 +39,12 @@ namespace SDK {
             SDKDebugLogger.Log("unity-script: MyAppStart Start called");
             MaxSdk.SetExtraParameter("disable_all_logs", "true");
 
-            // Disable MAX SDK retry mechanism
-            MaxSdk.SetExtraParameter("disable_auto_retries", "true");
+            // Disable MAX SDK retry mechanism - chi ap cho interstitial/rewarded (set theo tung ad unit
+            // trong BuildInterstitialOrder/BuildRewardedOrder). Truoc day set global khien banner cung
+            // mat co che tu retry cua MAX, nen khi vong retry tu viet bi ket thi banner khong con duong cuu.
 
             // Disable back-to-back ad loading
-            MaxSdk.SetExtraParameter("disable_back_to_back_loading", "true");
+            // MaxSdk.SetExtraParameter("disable_back_to_back_loading", "true");
 
             // Initialize InMobi Publisher Signals Manager
             // ABIInMobiPublisherSignalsManager.Initialize();
@@ -48,8 +57,9 @@ namespace SDK {
                 AdsManager.Instance.InitAdsType(AdsMediationType.MAX);
                 //MaxSdk.ShowMediationDebugger();
             };
-            MaxSdk.SetHasUserConsent(true);
-            MaxSdk.SetDoNotSell(false);
+            // Khong tu set consent o day: MAX Terms and Privacy Policy Flow dang bat nen
+            // MAX lay lua chon that cua nguoi choi tu Google UMP. Ep SetHasUserConsent(true)
+            // se bao "da dong y" cho ca nguoi o EU vua bam tu choi.
             MaxSdk.InitializeSdk();
             MaxSdk.SetVerboseLogging(false);
         }
@@ -68,9 +78,14 @@ namespace SDK {
                 ad_type = impressionData.AdFormat
             };
             AdRevenuePaidCallback?.Invoke(impression);
-        
+
+            // Tracker riêng của game cần AdInfo gốc của MAX (vd. ABILibsCustomEvent TROAS / Bamboo, TikTok)
+            SDKGameHooks.OnMaxAdRevenuePaid?.Invoke(adUnitId, impressionData);
+
+
+
             // AnalyticsManager.LogAdsRevenue(impression, adsType);
-            
+
             // Track ad impression for InMobi signals
             // ABIInMobiPublisherSignalsManager.TrackAdImpression(adsType, revenue);
         }
@@ -104,6 +119,7 @@ namespace SDK {
                     {
                         m_InterstitialOrder.Add(id);
                         m_InterstitialReadyMap.Add(id, false);
+                        MaxSdk.SetInterstitialExtraParameter(id, "disable_auto_retries", "true");
                     }
                 }
             }
@@ -112,19 +128,39 @@ namespace SDK {
             {
                 m_InterstitialOrder.Add(m_MaxAdConfig.InterstitialAdUnitID);
                 m_InterstitialReadyMap.Add(m_MaxAdConfig.InterstitialAdUnitID, false);
+                MaxSdk.SetInterstitialExtraParameter(m_MaxAdConfig.InterstitialAdUnitID, "disable_auto_retries", "true");
             }
         }
 
         private void PreloadAllInterstitialAds()
         {
             BuildInterstitialOrder();
-            
+
             LoadInterstitialFirst();
         }
-        
-        private void LoadInterstitialFirst()
+
+        private void LoadInterstitialFirst(bool isSkipDelay = false)
         {
+            if (!isSkipDelay)
+            {
+                DelayLoadInterstitialFirst().Forget();
+                return;
+            }
+
             if (isWaitLoadInterstitialUntilAvailable) return;
+
+            // Bug fix: tranh ArgumentOutOfRangeException khi order rong
+            if (m_InterstitialOrder == null || m_InterstitialOrder.Count == 0)
+            {
+                BuildInterstitialOrder();
+            }
+            if (m_InterstitialOrder.Count == 0)
+            {
+                SDKDebugLogger.Log("LoadInterstitialFirst aborted: no interstitial ad units configured");
+                isWaitLoadInterstitialUntilAvailable = false;
+                return;
+            }
+
             isWaitLoadInterstitialUntilAvailable = true;
 
             SDKDebugLogger.Log($"LoadInterstitialFirst");
@@ -132,36 +168,97 @@ namespace SDK {
             m_CurrentLoadingIndexInterstitial = 0;
 
             string adUnitId = m_InterstitialOrder[m_CurrentLoadingIndexInterstitial];
-            
-            if (!m_InterstitialReadyMap[adUnitId])
+
+            // Bug4 fix: dung MaxSdk lam nguon su that thay vi map noi bo
+            bool isReady = MaxSdk.IsInterstitialReady(adUnitId);
+            m_InterstitialReadyMap[adUnitId] = isReady;
+
+            if (!isReady)
             {
-                
-                SDKDebugLogger.Log($"Start loading interstitial ad at index {0}: {adUnitId}");
+                m_CurrentLoadingInterstitialAdUnitId = adUnitId;
+                SDKDebugLogger.Log($"Start loading interstitial ad at index 0: {adUnitId}");
                 MaxSdk.LoadInterstitial(adUnitId);
+                StartInterstitialLoadTimeout();
             }
-            else if (m_InterstitialReadyMap[adUnitId])
+            else
             {
-                SDKDebugLogger.Log($"Interstitial ad at index {0} already ready: {adUnitId}");
+                m_CurrentLoadingInterstitialAdUnitId = null;
+                SDKDebugLogger.Log($"Interstitial ad at index 0 already ready: {adUnitId}");
+                isWaitLoadInterstitialUntilAvailable = false;
             }
+        }
+
+        private async UniTaskVoid DelayLoadInterstitialFirst()
+        {
+            await UniTask.Delay(TimeSpan.FromSeconds(LOAD_AD_FIRST_DELAY_SECONDS));
+            LoadInterstitialFirst(true);
         }
 
         private void LoadInterstitialAtIndex(int index)
         {
             SDKDebugLogger.Log($"LoadInterstitialAtIndex: {index}");
+            if (index < 0 || index >= m_InterstitialOrder.Count)
+            {
+                SDKDebugLogger.Log($"LoadInterstitialAtIndex aborted: index {index} out of range (count {m_InterstitialOrder.Count})");
+                isWaitLoadInterstitialUntilAvailable = false;
+                return;
+            }
             string adUnitId = m_InterstitialOrder[index];
             bool isReady = MaxSdk.IsInterstitialReady(adUnitId);
             m_InterstitialReadyMap[adUnitId] = isReady;
-            
+
             if (!m_InterstitialReadyMap[adUnitId])
             {
                 m_CurrentLoadingIndexInterstitial = index;
+                m_CurrentLoadingInterstitialAdUnitId = adUnitId;
                 SDKDebugLogger.Log($"Start loading interstitial ad at index {index}: {adUnitId}");
                 MaxSdk.LoadInterstitial(adUnitId);
+                StartInterstitialLoadTimeout();
             }
-            else if (m_InterstitialReadyMap[adUnitId])
+            else
             {
+                m_CurrentLoadingInterstitialAdUnitId = null;
                 isWaitLoadInterstitialUntilAvailable = false;
                 SDKDebugLogger.Log($"Interstitial ad at index {index} already ready: {adUnitId}");
+            }
+        }
+
+        private void StartInterstitialLoadTimeout()
+        {
+            CancelInterstitialLoadTimeout();
+            m_InterstitialLoadTimeoutCts = new CancellationTokenSource();
+            InterstitialLoadTimeoutAsync(m_InterstitialLoadTimeoutCts.Token).Forget();
+        }
+
+        private void CancelInterstitialLoadTimeout()
+        {
+            if (m_InterstitialLoadTimeoutCts == null) return;
+            m_InterstitialLoadTimeoutCts.Cancel();
+            m_InterstitialLoadTimeoutCts.Dispose();
+            m_InterstitialLoadTimeoutCts = null;
+        }
+
+        private async UniTaskVoid InterstitialLoadTimeoutAsync(CancellationToken token)
+        {
+            try
+            {
+                await UniTask.Delay(TimeSpan.FromSeconds(LOAD_AD_TIMEOUT_SECONDS), cancellationToken: token);
+                SDKDebugLogger.Log($"Interstitial load timeout after {LOAD_AD_TIMEOUT_SECONDS}s at index {m_CurrentLoadingIndexInterstitial} - moving to next ad unit");
+                // Bug1 fix: timeout thi di tiep index ke tiep, khong reset ve 0
+                m_CurrentLoadingInterstitialAdUnitId = null;
+                int nextIndex = m_CurrentLoadingIndexInterstitial + 1;
+                if (nextIndex < m_InterstitialOrder.Count)
+                {
+                    LoadInterstitialAtIndex(nextIndex);
+                }
+                else
+                {
+                    isWaitLoadInterstitialUntilAvailable = false;
+                    LoadInterstitialFirst(); // restart tu index 0 sau delay, tranh spam request
+                }
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 
@@ -171,7 +268,7 @@ namespace SDK {
             for (int i = 0; i < m_InterstitialOrder.Count; i++)
             {
                 string adUnitId = m_InterstitialOrder[i];
-                if (m_InterstitialReadyMap[adUnitId])
+                if (MaxSdk.IsInterstitialReady(adUnitId))
                 {
                     SDKDebugLogger.Log("Show MAX Interstitial with AdUnit: " + adUnitId);
                     m_InterstitialReadyMap[adUnitId] = false;
@@ -183,7 +280,7 @@ namespace SDK {
             Debug.Log("No interstitial ad ready to show");
             m_InterstitialAdShowFailCallback?.Invoke();
             Debug.Log("Reload Interstitial after show fail");
-            LoadInterstitialFirst();
+            LoadInterstitialFirst(true);
         }
 
 
@@ -196,7 +293,7 @@ namespace SDK {
                 BuildInterstitialOrder();
             }
 
-            LoadInterstitialFirst();
+            LoadInterstitialFirst(true);
         }
         public override void ShowInterstitialAd(Action successCallback, Action failedCallback, string m_InterstitialPlacement = "interstitial")
         {
@@ -226,18 +323,37 @@ namespace SDK {
             m_InterstitialReadyMap[adUnitId] = true;
             revenueInterstitial = adInfo.Revenue;
             SDKDebugLogger.Log("Revenue Interstitial: " + revenueInterstitial);
-            
+
             EventManager.AddEventNextFrame(m_InterstitialAdLoadSuccessCallback);
 
+            // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
+            if (adUnitId != m_CurrentLoadingInterstitialAdUnitId)
+            {
+                SDKDebugLogger.Log($"Stale interstitial loaded callback: {adUnitId}, current loading: {m_CurrentLoadingInterstitialAdUnitId ?? "none"}");
+                return;
+            }
+
+            CancelInterstitialLoadTimeout();
+            m_CurrentLoadingInterstitialAdUnitId = null;
             isWaitLoadInterstitialUntilAvailable = false;
         }
 
         private void OnInterstitialLoadFailedEvent(string adUnitId, MaxSdkBase.ErrorInfo errorInfo)
         {
-            SDKDebugLogger.Log("Load MAX Interstitial Fai: " + adUnitId);
+            SDKDebugLogger.Log("Load MAX Interstitial Fail: " + adUnitId);
             m_InterstitialReadyMap[adUnitId] = false;
             EventManager.AddEventNextFrame(m_InterstitialAdLoadFailCallback);
-            
+
+            // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
+            if (adUnitId != m_CurrentLoadingInterstitialAdUnitId)
+            {
+                SDKDebugLogger.Log($"Stale interstitial fail callback: {adUnitId}, current loading: {m_CurrentLoadingInterstitialAdUnitId ?? "none"}");
+                return;
+            }
+
+            CancelInterstitialLoadTimeout();
+            m_CurrentLoadingInterstitialAdUnitId = null;
+
             int nextIndex = m_CurrentLoadingIndexInterstitial + 1;
             if (nextIndex < m_InterstitialOrder.Count)
             {
@@ -246,15 +362,17 @@ namespace SDK {
             }
             else
             {
+                SDKDebugLogger.Log("All interstitial ads failed to load - restart after delay");
                 isWaitLoadInterstitialUntilAvailable = false;
-                LoadInterstitialFirst();
-                SDKDebugLogger.Log("All interstitial ads failed to load");
+                LoadInterstitialFirst(); // restart co delay, tranh vong lap request lien tuc
             }
         }
 
-        private void InterstitialFailedToDisplayEvent(string adUnitId, MaxSdkBase.ErrorInfo errorInfo, MaxSdkBase.AdInfo adInfo) {
+        private void InterstitialFailedToDisplayEvent(string adUnitId, MaxSdkBase.ErrorInfo errorInfo, MaxSdkBase.AdInfo adInfo)
+        {
             SDKDebugLogger.Log("unity-script: I got InterstitialAdShowFailedEvent, code :  " + errorInfo.Code + ", description : " + errorInfo.Message);
             EventManager.AddEventNextFrame(m_InterstitialAdShowFailCallback);
+            LoadInterstitialFirst();
         }
 
         private void OnInterstitialDismissedEvent(string adUnitId, MaxSdkBase.AdInfo adInfo)
@@ -270,7 +388,7 @@ namespace SDK {
 
             // Send InMobi display signals (dir_r, dir_nn, dir_type)
             // ABIInMobiPublisherSignalsManager.OnAdDisplayed(adUnitId, adInfo);
-            
+
             // Send updated publisher signals
             // ABIInMobiPublisherSignalsManager.SendAllPublisherSignals();
 
@@ -279,7 +397,7 @@ namespace SDK {
         #endregion
 
         #region Rewards Video
-        
+
         public override void InitRewardVideoAd(Action videoClosed, Action videoLoadSuccess, Action videoLoadFailed, Action videoStart) {
             base.InitRewardVideoAd(videoClosed, videoLoadSuccess, videoLoadFailed, videoStart);
 
@@ -294,7 +412,7 @@ namespace SDK {
             MaxSdkCallbacks.Rewarded.OnAdRevenuePaidEvent += (adUnitID, adInfo) => { OnAdRevenuePaidEvent(AdsType.REWARDED, adUnitID, adInfo);};
             PreloadAllRewardedAds();
         }
-        
+
         private void BuildRewardedOrder()
         {
             m_RewardedOrder.Clear();
@@ -317,19 +435,39 @@ namespace SDK {
             {
                 m_RewardedOrder.Add(m_MaxAdConfig.RewardedAdUnitID);
                 m_RewardedReadyMap.Add(m_MaxAdConfig.RewardedAdUnitID, false);
+                MaxSdk.SetRewardedAdExtraParameter(m_MaxAdConfig.RewardedAdUnitID, "disable_auto_retries", "true");
             }
         }
 
         private void PreloadAllRewardedAds()
         {
             BuildRewardedOrder();
-            
+
             LoadRewardedFirst();
         }
-        
-        private void LoadRewardedFirst()
+
+        private void LoadRewardedFirst(bool isSkipDelay = false)
         {
+            if (!isSkipDelay)
+            {
+                DelayLoadRewardedFirst().Forget();
+                return;
+            }
+
             if (isWaitLoadRewardedUntilAvailable) return;
+
+            // Bug fix: tranh ArgumentOutOfRangeException khi order rong
+            if (m_RewardedOrder == null || m_RewardedOrder.Count == 0)
+            {
+                BuildRewardedOrder();
+            }
+            if (m_RewardedOrder.Count == 0)
+            {
+                SDKDebugLogger.Log("LoadRewardedFirst aborted: no rewarded ad units configured");
+                isWaitLoadRewardedUntilAvailable = false;
+                return;
+            }
+
             isWaitLoadRewardedUntilAvailable = true;
 
             SDKDebugLogger.Log($"LoadRewardedFirst");
@@ -337,36 +475,97 @@ namespace SDK {
             m_CurrentLoadingIndexReward = 0;
 
             string adUnitId = m_RewardedOrder[m_CurrentLoadingIndexReward];
-            
-            if (!m_RewardedReadyMap[adUnitId])
+
+            // Bug4 fix: dung MaxSdk lam nguon su that thay vi map noi bo
+            bool isReady = MaxSdk.IsRewardedAdReady(adUnitId);
+            m_RewardedReadyMap[adUnitId] = isReady;
+
+            if (!isReady)
             {
-                
-                SDKDebugLogger.Log($"Start loading rewarded ad at index {0}: {adUnitId}");
+                m_CurrentLoadingRewardedAdUnitId = adUnitId;
+                SDKDebugLogger.Log($"Start loading rewarded ad at index 0: {adUnitId}");
                 MaxSdk.LoadRewardedAd(adUnitId);
+                StartRewardedLoadTimeout();
             }
-            else if (m_RewardedReadyMap[adUnitId])
+            else
             {
-                SDKDebugLogger.Log($"Rewarded ad at index {0} already ready: {adUnitId}");
+                m_CurrentLoadingRewardedAdUnitId = null;
+                SDKDebugLogger.Log($"Rewarded ad at index 0 already ready: {adUnitId}");
+                isWaitLoadRewardedUntilAvailable = false;
             }
+        }
+
+        private async UniTaskVoid DelayLoadRewardedFirst()
+        {
+            await UniTask.Delay(TimeSpan.FromSeconds(LOAD_AD_FIRST_DELAY_SECONDS));
+            LoadRewardedFirst(true);
         }
 
         private void LoadRewardedAtIndex(int index)
         {
             SDKDebugLogger.Log($"LoadRewardedAtIndex: {index}");
+            if (index < 0 || index >= m_RewardedOrder.Count)
+            {
+                SDKDebugLogger.Log($"LoadRewardedAtIndex aborted: index {index} out of range (count {m_RewardedOrder.Count})");
+                isWaitLoadRewardedUntilAvailable = false;
+                return;
+            }
             string adUnitId = m_RewardedOrder[index];
             bool isReady = MaxSdk.IsRewardedAdReady(adUnitId);
             m_RewardedReadyMap[adUnitId] = isReady;
-            
+
             if (!m_RewardedReadyMap[adUnitId])
             {
                 m_CurrentLoadingIndexReward = index;
+                m_CurrentLoadingRewardedAdUnitId = adUnitId;
                 SDKDebugLogger.Log($"Start loading rewarded ad at index {index}: {adUnitId}");
                 MaxSdk.LoadRewardedAd(adUnitId);
+                StartRewardedLoadTimeout();
             }
-            else if (m_RewardedReadyMap[adUnitId])
+            else
             {
+                m_CurrentLoadingRewardedAdUnitId = null;
                 isWaitLoadRewardedUntilAvailable = false;
                 SDKDebugLogger.Log($"Rewarded ad at index {index} already ready: {adUnitId}");
+            }
+        }
+
+        private void StartRewardedLoadTimeout()
+        {
+            CancelRewardedLoadTimeout();
+            m_RewardedLoadTimeoutCts = new CancellationTokenSource();
+            RewardedLoadTimeoutAsync(m_RewardedLoadTimeoutCts.Token).Forget();
+        }
+
+        private void CancelRewardedLoadTimeout()
+        {
+            if (m_RewardedLoadTimeoutCts == null) return;
+            m_RewardedLoadTimeoutCts.Cancel();
+            m_RewardedLoadTimeoutCts.Dispose();
+            m_RewardedLoadTimeoutCts = null;
+        }
+
+        private async UniTaskVoid RewardedLoadTimeoutAsync(CancellationToken token)
+        {
+            try
+            {
+                await UniTask.Delay(TimeSpan.FromSeconds(LOAD_AD_TIMEOUT_SECONDS), cancellationToken: token);
+                SDKDebugLogger.Log($"Rewarded load timeout after {LOAD_AD_TIMEOUT_SECONDS}s at index {m_CurrentLoadingIndexReward} - moving to next ad unit");
+                // Bug1 fix: timeout thi di tiep index ke tiep, khong reset ve 0
+                m_CurrentLoadingRewardedAdUnitId = null;
+                int nextIndex = m_CurrentLoadingIndexReward + 1;
+                if (nextIndex < m_RewardedOrder.Count)
+                {
+                    LoadRewardedAtIndex(nextIndex);
+                }
+                else
+                {
+                    isWaitLoadRewardedUntilAvailable = false;
+                    LoadRewardedFirst(); // restart tu index 0 sau delay
+                }
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 
@@ -380,9 +579,9 @@ namespace SDK {
                 BuildRewardedOrder();
             }
 
-            LoadRewardedFirst();
+            LoadRewardedFirst(true);
         }
-        
+
         public override void ShowRewardVideoAd(Action successCallback, Action failedCallback)
         {
             if (RewardReadyToShow() && IsInterstitialLoaded() && revenueInterstitial > revenueRewarded) {
@@ -415,18 +614,35 @@ namespace SDK {
             m_RewardedReadyMap[adUnitID] = true;
             revenueRewarded = adInfo.Revenue;
             SDKDebugLogger.Log("Revenue Rewarded: " + revenueRewarded);
-            
-            EventManager.AddEventNextFrame(m_RewardedVideoLoadSuccessCallback);
-            // m_RewardedVideoLoadSuccessCallback?.Invoke();
 
+            EventManager.AddEventNextFrame(m_RewardedVideoLoadSuccessCallback);
+
+            // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
+            if (adUnitID != m_CurrentLoadingRewardedAdUnitId)
+            {
+                SDKDebugLogger.Log($"Stale rewarded loaded callback: {adUnitID}, current loading: {m_CurrentLoadingRewardedAdUnitId ?? "none"}");
+                return;
+            }
+
+            CancelRewardedLoadTimeout();
+            m_CurrentLoadingRewardedAdUnitId = null;
             isWaitLoadRewardedUntilAvailable = false;
         }
         private void Rewarded_OnAdLoadedFailEvent(string adUnitID, MaxSdkBase.ErrorInfo adError) {
             SDKDebugLogger.Log("RewardedVideoAd MAX Loaded Fail: " + adUnitID);
             m_RewardedReadyMap[adUnitID] = false;
             EventManager.AddEventNextFrame(m_RewardedVideoLoadFailedCallback);
-            // m_RewardedVideoLoadFailedCallback?.Invoke();
-            
+
+            // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
+            if (adUnitID != m_CurrentLoadingRewardedAdUnitId)
+            {
+                SDKDebugLogger.Log($"Stale rewarded fail callback: {adUnitID}, current loading: {m_CurrentLoadingRewardedAdUnitId ?? "none"}");
+                return;
+            }
+
+            CancelRewardedLoadTimeout();
+            m_CurrentLoadingRewardedAdUnitId = null;
+
             int nextIndex = m_CurrentLoadingIndexReward + 1;
             if (nextIndex < m_RewardedOrder.Count)
             {
@@ -435,9 +651,9 @@ namespace SDK {
             }
             else
             {
+                SDKDebugLogger.Log("All rewarded ads failed to load - restart after delay");
                 isWaitLoadRewardedUntilAvailable = false;
-                LoadRewardedFirst();
-                SDKDebugLogger.Log("All rewarded ads failed to load");
+                LoadRewardedFirst(); // restart co delay, tranh vong lap request lien tuc
             }
         }
 
@@ -449,35 +665,52 @@ namespace SDK {
             switch (Application.platform)
             {
                 case RuntimePlatform.Android:
-                {
-                    if (m_RewardedVideoEarnSuccessCallback != null) {
-                        SDKDebugLogger.Log("Watch video Success Callback!");
-                        EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
-                        m_RewardedVideoEarnSuccessCallback = null;
-                    }
+                    {
+                        if (m_RewardedVideoEarnSuccessCallback != null)
+                        {
+                            SDKDebugLogger.Log("Watch video Success Callback!");
+                            EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
+                            m_RewardedVideoEarnSuccessCallback = null;
+                        }
 
-                    break;
-                }
-                case RuntimePlatform.IPhonePlayer:
-                {
-                    if (m_RewardedVideoEarnSuccessCallback != null) {
-                        SDKDebugLogger.Log("Watch video Success Callback!");
-                        EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
-                        m_RewardedVideoEarnSuccessCallback = null;
+                        break;
                     }
-                    break;
-                }
+                case RuntimePlatform.IPhonePlayer:
+                    {
+                        if (m_RewardedVideoEarnSuccessCallback != null)
+                        {
+                            SDKDebugLogger.Log("Watch video Success Callback!");
+                            EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
+                            m_RewardedVideoEarnSuccessCallback = null;
+                        }
+                        break;
+                    }
+#if UNITY_EDITOR
+                // Editor: Application.platform là OSXEditor/WindowsEditor nên không rơi vào 2 case trên,
+                // success callback không bao giờ được gọi -> xem ad stub xong không nhận thưởng.
+                default:
+                    {
+                        if (m_RewardedVideoEarnSuccessCallback != null)
+                        {
+                            EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
+                            m_RewardedVideoEarnSuccessCallback = null;
+                        }
+                        break;
+                    }
+#endif
             }
+
+            LoadRewardedFirst();
         }
 
         private void Rewarded_OnAdClosedEvent(string adUnitID, MaxSdkBase.AdInfo adInfo) {
             SDKDebugLogger.Log("unity-script: I got RewardedVideoAdClosedEvent");
-            if (m_RewardedVideoEarnSuccessCallback != null)
-            {
-                EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
-                m_RewardedVideoEarnSuccessCallback = null;
-            }
-            EventManager.AddEventNextFrame(() => 
+            // if (m_RewardedVideoEarnSuccessCallback != null)
+            // {
+            //     EventManager.AddEventNextFrame(m_RewardedVideoEarnSuccessCallback);
+            //     m_RewardedVideoEarnSuccessCallback = null;
+            // }
+            EventManager.AddEventNextFrame(() =>
             {
                 m_RewardedVideoCloseCallback?.Invoke();
             });
@@ -489,29 +722,32 @@ namespace SDK {
         private void Rewarded_OnAdStartedEvent(string adUnitID, MaxSdkBase.AdInfo adInfo)
         {
             SDKDebugLogger.Log("unity-script: I got RewardedVideoAdStartedEvent");
-            
+
             // Send InMobi display signals (dir_r, dir_nn, dir_type)
             // ABIInMobiPublisherSignalsManager.OnAdDisplayed(adUnitID, adInfo);
-            
+
             // Send updated publisher signals
             // ABIInMobiPublisherSignalsManager.SendAllPublisherSignals();
-            
+
             EventManager.AddEventNextFrame(m_RewardedVideoShowStartCallback);
-            
+
         }
 
         private void RewardedVideoAdEndedEvent() {
             SDKDebugLogger.Log("unity-script: I got RewardedVideoAdEndedEvent");
         }
 
-        private void Rewarded_OnAdShowFailedEvent(string adUnitID, MaxSdkBase.ErrorInfo errorInfo, MaxSdkBase.AdInfo adInfo) {
+        private void Rewarded_OnAdShowFailedEvent(string adUnitID, MaxSdkBase.ErrorInfo errorInfo, MaxSdkBase.AdInfo adInfo)
+        {
             SDKDebugLogger.Log("unity-script: I got RewardedVideoAdShowFailedEvent, code :  " + errorInfo.Code + ", description : " + errorInfo.Message);
             EventManager.AddEventNextFrame(m_RewardedVideoShowFailCallback);
+
+            LoadRewardedFirst();
         }
 
         private void Rewarded_OnAdClickedEvent(string adUnitID, MaxSdkBase.AdInfo adInfo) {
             SDKDebugLogger.Log("unity-script: I got RewardedVideoAdClickedEvent");
-            
+
             // Track ad click for CTR calculation
             // ABIInMobiPublisherSignalsManager.TrackAdClick(AdsType.REWARDED);
         }
@@ -522,7 +758,7 @@ namespace SDK {
             for (int i = 0; i < m_RewardedOrder.Count; i++)
             {
                 string adUnitId = m_RewardedOrder[i];
-                if (m_RewardedReadyMap[adUnitId])
+                if (MaxSdk.IsRewardedAdReady(adUnitId))
                 {
                     return true;
                 }
@@ -536,7 +772,7 @@ namespace SDK {
             for (int i = 0; i < m_RewardedOrder.Count; i++)
             {
                 string adUnitId = m_RewardedOrder[i];
-                if (m_RewardedReadyMap[adUnitId])
+                if (MaxSdk.IsRewardedAdReady(adUnitId))
                 {
                     SDKDebugLogger.Log("[Check Ads] Show MAX Rewarded with AdUnit: " + adUnitId);
                     m_RewardedReadyMap[adUnitId] = false;
@@ -547,28 +783,30 @@ namespace SDK {
 
             // if (GameDefaultConfig.EnableInterstitialFallback)
             // {
-            //     FallbackToInterstitial();
+            // FallbackToInterstitial();
             // }
             // else
             // {
-                EventManager.AddEventNextFrame(m_RewardedVideoShowFailCallback);
-                LoadRewardedFirst();
+            EventManager.AddEventNextFrame(m_RewardedVideoShowFailCallback);
+            LoadRewardedFirst(true);
+            SDKGameHooks.ShowError?.Invoke("Ad unavailable, please try again later.");
             // }
         }
 
         private void FallbackToInterstitial()
         {
-            SDKDebugLogger.Log("[Check Ads] FallbackToInterstitial");
-            // InGameAdsController.EventShowAdsInter?.Invoke(
-            //     "backfill",
+            // SDKDebugLogger.Log("[Check Ads] FallbackToInterstitial");
+            // EventAdsManager.ShowInterstitialAds?.Invoke(
             //     () => { m_RewardedVideoEarnSuccessCallback?.Invoke(); },
-            //     () => { m_RewardedVideoCloseCallback?.Invoke(false); },
             //     () => { m_RewardedVideoShowFailCallback?.Invoke(); },
-            //     true,
-            //     true
+            //     () => { m_RewardedVideoCloseCallback?.Invoke(); },
+            //     false,
+            //     false,
+            //     "ads_fallback_to_interstitial",
+            //     new AnalyticsParameter("placement", "rewarded_to_interstitial")
             // );
 
-            LoadRewardedFirst();
+            // LoadRewardedFirst(true);
         }
 
         #region Banner
@@ -596,9 +834,7 @@ namespace SDK {
             SDKDebugLogger.Log("Banner MAX Init ID = " + m_MaxAdConfig.BannerAdUnitID);
             MaxSdk.CreateBanner(m_MaxAdConfig.BannerAdUnitID, m_BannerPosition);
             //MaxSdk.SetBannerBackgroundColor(m_MaxAdConfig.BannerAdUnitID, Color.black);
-            
-            // Enforce banner-only format để ngăn MREC được hiển thị
-            // Set extra parameter để chỉ cho phép banner format
+
             MaxSdk.SetBannerExtraParameter(m_MaxAdConfig.BannerAdUnitID, "adaptive_banner", "true");
 
             MaxSdkCallbacks.Banner.OnAdLoadedEvent += BannerAdLoadedEvent;
@@ -608,18 +844,23 @@ namespace SDK {
             MaxSdkCallbacks.Banner.OnAdCollapsedEvent += OnBannerAdCollapsedEvent;
             MaxSdkCallbacks.Banner.OnAdExpandedEvent += OnBannerAdExpandedEvent;
         }
-        
+
         public override void RequestBannerAds()
         {
             base.RequestBannerAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.BannerAdUnitID)) return;
             MaxSdk.LoadBanner(m_MaxAdConfig.BannerAdUnitID);
         }
 
 
         public override void ShowBannerAds()
         {
-            if (!m_IsBannerLoaded) return;
+            if (string.IsNullOrEmpty(m_MaxAdConfig.BannerAdUnitID)) return;
 
+            // Khong chan theo m_IsBannerLoaded nua: MaxSdk.ShowBanner goi duoc ca khi chua co fill,
+            // banner view se tu hien khi ad ve va auto-refresh cua MAX duoc bat lai.
+            // Truoc day return im lang o day khien lenh show bi mat han, va khi banner load lai
+            // thanh cong thi khong con ai goi ShowBanner nua -> banner bien mat vinh vien.
             if (!CheckBannerHeight())
             {
                 return;
@@ -628,12 +869,25 @@ namespace SDK {
             base.ShowBannerAds();
             SDKDebugLogger.Log("MAX Mediation Banner Call Show");
             MaxSdk.ShowBanner(m_MaxAdConfig.BannerAdUnitID);
+
+            // MAX khong co event "banner displayed" -> tu ban callback de AdsManager biet banner dang hien
+            EventManager.AddEventNextFrame(m_BannerAdsDisplayedCallback);
         }
         public override void HideBannerAds()
         {
             base.HideBannerAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.BannerAdUnitID)) return;
             SDKDebugLogger.Log("MAX Mediation Banner Call Hide");
             MaxSdk.HideBanner(m_MaxAdConfig.BannerAdUnitID);
+        }
+
+        public override void DestroyBannerAds()
+        {
+            base.DestroyBannerAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.BannerAdUnitID)) return;
+            SDKDebugLogger.Log("MAX Mediation Banner Call Destroy");
+            MaxSdk.DestroyBanner(m_MaxAdConfig.BannerAdUnitID);
+            m_IsBannerLoaded = false;
         }
 
         public override bool IsBannerLoaded()
@@ -642,39 +896,19 @@ namespace SDK {
         }
 
         private void BannerAdLoadedEvent(string adUnitID, MaxSdkBase.AdInfo adInfo) {
-            SDKDebugLogger.Log($"MAX Mediation Banner Loaded Success - AdFormat: {adInfo.AdFormat}, Network: {adInfo.NetworkName}");
-            
-            // Kiểm tra AdFormat để phát hiện MREC
-            if (!string.IsNullOrEmpty(adInfo.AdFormat) && 
-                (adInfo.AdFormat.Equals("MREC", StringComparison.OrdinalIgnoreCase) || 
-                 adInfo.AdFormat.Equals("MRec", StringComparison.OrdinalIgnoreCase)))
-            {
-                SDKDebugLogger.Log($"Phát hiện MREC trong banner placement! AdFormat: {adInfo.AdFormat}. Chặn và reload banner.");
-                HideBannerAds();
-                m_IsBannerLoaded = false;
-                EventManager.AddEventNextFrame(m_BannerAdLoadedFailCallback);
-                // Reload banner để lấy banner thật
-                MaxSdk.LoadBanner(adUnitID);
-                return;
-            }
-            
-            // Kiểm tra kích thước thực tế của banner để phát hiện MREC (300x250)
-            if (!CheckBannerSize(adUnitID))
-            {
-                return;
-            }
-            
-            if (!CheckBannerHeight())
-            {
-                return;
-            }
-            
-            EventManager.AddEventNextFrame(m_BannerAdLoadedSuccessCallback);
-            // m_BannerAdLoadedSuccessCallback?.Invoke();
+            SDKDebugLogger.Log($"MAX Mediation Banner Loaded Success - AdFormat: {adInfo.AdFormat}, Network: {adInfo.NetworkName}, " +
+                               $"Placement: {adInfo.NetworkPlacement}, Creative: {adInfo.CreativeIdentifier}, DSP: {adInfo.DspName}");
+
+            // Moi lan auto-refresh la mot creative moi -> ghi lai de log click/expand/redirect dung creative
+            AdsManager.Instance?.BannerRedirectGuard?.OnCreativeLoaded(adInfo.NetworkName, adInfo.NetworkPlacement,
+                adInfo.CreativeIdentifier, adInfo.DspName);
+
+            // Dat co truoc khi ban callback: AdsManager.OnBannerLoadedSuccess se goi lai ShowBannerAds
             m_IsBannerLoaded = true;
-            
-            // Update session depth for InMobi signals when banner is shown
-            // Note: Banner ads are shown continuously, so we track when ShowBannerAds is called
+
+            CheckBannerHeight();
+
+            EventManager.AddEventNextFrame(m_BannerAdLoadedSuccessCallback);
         }
         private void BannerAdLoadFailedEvent(string adUnitID, MaxSdkBase.ErrorInfo errorInfo)
         {
@@ -687,10 +921,10 @@ namespace SDK {
         {
             SDKDebugLogger.Log("MAX Mediation Banner Clicked");
             // MaxAnalyticsManager.TrackAdClicked("banner");
-            
+
             // Track ad click for CTR calculation
             // ABIInMobiPublisherSignalsManager.TrackAdClick(AdsType.BANNER);
-            
+
             EventManager.AddEventNextFrame(m_BannerAdsClickedCallback);
             // m_BannerAdsClickedCallback?.Invoke();
         }
@@ -707,61 +941,6 @@ namespace SDK {
             // m_BannerAdsExpandedCallback?.Invoke();
         }
 
-        private bool CheckBannerSize(string adUnitID)
-        {
-            try
-            {
-                Rect bannerLayout = MaxSdk.GetBannerLayout(adUnitID);
-                float bannerWidth = bannerLayout.width;
-                float bannerHeight = bannerLayout.height;
-                
-                SDKDebugLogger.Log($"Banner Layout - Width: {bannerWidth}px, Height: {bannerHeight}px");
-                
-                // MREC thường có kích thước 300x250 pixels
-                // Banner thông thường có chiều cao 50-90px
-                // Kiểm tra nếu banner có chiều cao > 150px thì có thể là MREC
-                const float mrecMinHeight = 150f; // MREC thường là 250px, banner thường < 100px
-                const float mrecWidthMin = 250f; // MREC thường có width ~300px
-                const float mrecWidthMax = 350f;
-                
-                // Kiểm tra chiều cao và chiều rộng để phát hiện MREC
-                if (bannerHeight > mrecMinHeight)
-                {
-                    // Nếu chiều cao > 150px và chiều rộng trong khoảng MREC (250-350px)
-                    if (bannerWidth >= mrecWidthMin && bannerWidth <= mrecWidthMax)
-                    {
-                        SDKDebugLogger.Log($"Phát hiện MREC dựa trên kích thước! Width: {bannerWidth}px, Height: {bannerHeight}px. Chặn banner.");
-                        HideBannerAds();
-                        m_IsBannerLoaded = false;
-                        EventManager.AddEventNextFrame(m_BannerAdLoadedFailCallback);
-                        // Reload banner để lấy banner thật
-                        MaxSdk.LoadBanner(adUnitID);
-                        return false;
-                    }
-                    // Nếu chỉ chiều cao > 150px cũng có thể là MREC (an toàn hơn)
-                    else if (bannerHeight > 200f)
-                    {
-                        SDKDebugLogger.Log($"Phát hiện MREC dựa trên chiều cao! Height: {bannerHeight}px (>200px). Chặn banner.");
-                        HideBannerAds();
-                        m_IsBannerLoaded = false;
-                        EventManager.AddEventNextFrame(m_BannerAdLoadedFailCallback);
-                        // Reload banner để lấy banner thật
-                        MaxSdk.LoadBanner(adUnitID);
-                        return false;
-                    }
-                }
-                
-                SDKDebugLogger.Log($"Banner kích thước hợp lệ - Width: {bannerWidth}px, Height: {bannerHeight}px");
-                return true;
-            }
-            catch (Exception e)
-            {
-                SDKDebugLogger.Log($"Lỗi khi kiểm tra kích thước banner: {e.Message}");
-                // Nếu không thể lấy layout, tiếp tục với kiểm tra height
-                return true;
-            }
-        }
-        
         private bool CheckBannerHeight()
         {
             float bannerHeight = MaxSdkUtils.GetAdaptiveBannerHeight();
@@ -769,7 +948,7 @@ namespace SDK {
             float safeAreaHeight = Screen.safeArea.height;
 
             float maxBannerHeightInPixels = screenHeight - safeAreaHeight;
-            
+
             float maxAllowedHeight;
             if (maxBannerHeightInPixels > 0 && maxBannerHeightInPixels > screenHeight * maxBannerHeightPercentage)
             {
@@ -781,18 +960,19 @@ namespace SDK {
                 // Dùng % màn hình
                 maxAllowedHeight = screenHeight * maxBannerHeightPercentage;
             }
-            
+
             SDKDebugLogger.Log($"Banner Height: {bannerHeight}px, Screen Height: {screenHeight}px, Safe Area Height: {safeAreaHeight}px, Max Allowed: {maxAllowedHeight}px ({(maxAllowedHeight/screenHeight)*100:F1}%)");
 
             if (bannerHeight > maxAllowedHeight)
             {
+                // Chi an banner, KHONG dat m_IsBannerLoaded = false va KHONG ban load-fail callback:
+                // ad van load thanh cong, no chi qua cao de hien. Bao "load fail" o day lam hong
+                // state machine retry ben AdsManager va khoa banner vinh vien.
                 SDKDebugLogger.Log($"Banner quá cao ({bannerHeight}px > {maxAllowedHeight}px)! Chặn banner để không che nội dung game.");
-                HideBannerAds();
-                m_IsBannerLoaded = false;
-                EventManager.AddEventNextFrame(m_BannerAdLoadedFailCallback);
+                MaxSdk.HideBanner(m_MaxAdConfig.BannerAdUnitID);
                 return false;
             }
-            
+
             SDKDebugLogger.Log($"Banner hợp lệ ({bannerHeight}px <= {maxAllowedHeight}px). Cho phép hiển thị.");
             return true;
         }
@@ -851,15 +1031,15 @@ namespace SDK {
             MaxSdk.HideMRec(m_MaxAdConfig.MrecAdUnitID);
         }
         #endregion
-        
+
         #region App Open Ads
 
-        public override void InitAppOpenAds(Action adLoadedCallback, Action adLoadFailedCallback, 
+        public override void InitAppOpenAds(Action adLoadedCallback, Action adLoadFailedCallback,
             Action adClosedCallback, Action adDisplayedCallback, Action adFailedToDisplayCallback)
         {
-            base.InitAppOpenAds(adLoadedCallback, adLoadFailedCallback, 
+            base.InitAppOpenAds(adLoadedCallback, adLoadFailedCallback,
                 adClosedCallback, adDisplayedCallback, adFailedToDisplayCallback);
-            
+
             MaxSdkCallbacks.AppOpen.OnAdLoadedEvent += OnAppOpenAdLoadedEvent;
             MaxSdkCallbacks.AppOpen.OnAdLoadFailedEvent += OnAppOpenAdLoadFailedEvent;
             MaxSdkCallbacks.AppOpen.OnAdClickedEvent += OnAppOpenAdClickedEvent;

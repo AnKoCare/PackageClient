@@ -36,6 +36,39 @@ public class PurchaserCallbacks
         PurchaserLogger.Log(Purchaser.IsReceiptAvailable(existingOrders)
             ? "Success - Found Existing Orders with receipts"
             : "Notice: - No Existing Orders with receipts");
+
+        // First launch after update: silently finish pre-fix pending orders
+        // (already delivered by the old build) without granting, so users who
+        // bought before the fix are not given the pack a second time.
+        if (!purchaser.IsBacklogReconciled)
+        {
+            ReconcilePreFixBacklog(existingOrders);
+        }
+    }
+
+    private void ReconcilePreFixBacklog(Orders existingOrders)
+    {
+        var pendingOrders = existingOrders?.PendingOrders;
+        if (pendingOrders != null)
+        {
+            foreach (var order in pendingOrders)
+            {
+                string transactionId = order.Info?.TransactionID;
+                foreach (var cartItem in order.CartOrdered.Items())
+                {
+                    string productID = cartItem.Product.definition.id;
+                    purchaser.MarkBacklogTransactionAsDelivered(productID, transactionId);
+                    PurchaserLogger.Log(
+                        $"[Backlog] '{productID}' tx '{transactionId}' treated as already delivered by a previous build. Finishing without granting.");
+                }
+
+                // Finish the transaction so the store stops re-delivering it. The
+                // resulting OnPurchaseConfirmed is skipped by the idempotency guard.
+                purchaser.ConfirmBacklogOrder(order);
+            }
+        }
+
+        purchaser.MarkBacklogReconciled();
     }
 
     public void OnExistingPurchasesFetchFailed(PurchasesFetchFailureDescription failure)
@@ -47,12 +80,18 @@ public class PurchaserCallbacks
 
     public void OnPurchasePending(PendingOrder order)
     {
+        string transactionId = order.Info?.TransactionID;
+
         foreach (var cartItem in order.CartOrdered.Items())
         {
             var product = cartItem.Product;
 
             PurchaserLogger.LogCompletedPurchase(product, order.Info);
             purchaser.ValidatePurchaseIfPossible(order.Info);
+
+            // The confirmed order will not carry the transaction id, so remember
+            // it now (per product) for the idempotency check at confirm time.
+            purchaser.StashPendingTransaction(product.definition.id, transactionId);
         }
 
         purchaser.ConfirmOrderIfAutomatic(order);
@@ -81,6 +120,7 @@ public class PurchaserCallbacks
         }
         purchaser.m_IAPProduct?.OnFail?.Invoke();
         purchaser.m_IAPProduct = null;
+        SDKGameHooks.HideLoadingBlock?.Invoke();
         // ActivityBlockContext.Events.WaitForPurchase?.Invoke(false);
     }
 
@@ -89,17 +129,59 @@ public class PurchaserCallbacks
         foreach (var cartItem in order.CartOrdered.Items())
         {
             var product = cartItem.Product;
+            string productID = product.definition.id;
 
             PurchaserLogger.LogConfirmedOrder(product, order.Info);
+
+            // Idempotency: the transaction id was captured at the pending stage
+            // (the confirmed order does not carry it). If we have already
+            // delivered this transaction (store re-delivery of a pending /
+            // deferred purchase across sessions), skip it so we never grant the
+            // same purchase twice.
+            string transactionId = purchaser.PopPendingTransaction(productID);
+            if (!purchaser.TryBeginDeliverTransaction(transactionId))
+            {
+                PurchaserLogger.Log($"Transaction '{transactionId}' for '{productID}' already delivered. Skipping.");
+                continue;
+            }
+
+            // Giao dịch đặc biệt của game (vd. Play Games Reward: giao dịch 0đ do Google phát, chỉ cộng đồ — không tính
+            // doanh thu, không tính là đã mua): game tự cộng đồ và trả true.
+            if (SDKGameHooks.TryHandleSpecialProduct?.Invoke(productID) == true)
+            {
+                continue;
+            }
+
+            // Revenue / analytics tracking (AppsFlyer, EventManager).
             OnBuyIAPSuccess(product);
 
+            // Deliver the items. Prefer the in-session shop callback (keeps the
+            // reward popup / shop UX) when it matches this product; otherwise
+            // fall back to central delivery by product id so deferred / pending /
+            // restored / interrupted purchases still credit the user.
+            bool inSessionHandled = purchaser.m_IAPProduct != null &&
+                                    purchaser.m_IAPProduct.ProductId == productID &&
+                                    purchaser.m_IAPProduct.OnSuccess != null;
+
+            if (inSessionHandled)
+            {
+                purchaser.m_IAPProduct.OnSuccess.Invoke();
+            }
+            else if (SDKGameHooks.GrantProductById != null)
+            {
+                SDKGameHooks.GrantProductById(productID);
+            }
+            else
+            {
+                PurchaserLogger.Log($"No in-session callback and no SDKGameHooks.GrantProductById for '{productID}' - items not delivered.");
+            }
         }
 
-        purchaser.m_IAPProduct?.OnSuccess?.Invoke();
         purchaser.m_IAPProduct = null;
+        SDKGameHooks.HideLoadingBlock?.Invoke();
         // UserDataManager.Instance.UploadUserDataToServer(false, false).Forget();
         // ActivityBlockContext.Events.WaitForPurchase?.Invoke(false);
-        
+
     }
 
     public void OnPurchaseFailed(FailedOrder failedOrder)
@@ -112,17 +194,34 @@ public class PurchaserCallbacks
         }
         purchaser.m_IAPProduct?.OnFail?.Invoke();
         purchaser.m_IAPProduct = null;
+        SDKGameHooks.HideLoadingBlock?.Invoke();
+        // No store UI is shown for this one (IAP fails it before reaching the
+        // store), so tell the user why nothing happened.
+        if (reason == PurchaseFailureReason.StoreNotConnected)
+        {
+            SDKGameHooks.ShowError?.Invoke(Purchaser.k_StoreUnavailableMessage);
+        }
         // ActivityBlockContext.Events.WaitForPurchase?.Invoke(false);
     }
 
     public void OnOrderDeferred(DeferredOrder deferredOrder)
     {
+        // A deferred / pending order is NOT a failure. It means the payment is
+        // still being processed (e.g. Pix / boleto / verified card on Android,
+        // "Ask to Buy" awaiting parental approval on iOS). The money is not
+        // charged yet and the items must NOT be granted here.
+        //
+        // Do NOT call OnFail (that would tell the shop the purchase failed) and
+        // release the in-progress lock so the user isn't stuck on a spinner.
+        // When the payment later settles, OnPurchaseConfirmed fires and the
+        // items are delivered by product id via SDKGameHooks.GrantProductById, even if this
+        // happens in a later session.
         foreach (var cartItem in deferredOrder.CartOrdered.Items())
         {
             PurchaserLogger.LogDeferredPurchase(cartItem.Product);
         }
-        purchaser.m_IAPProduct?.OnFail?.Invoke();
         purchaser.m_IAPProduct = null;
+        SDKGameHooks.HideLoadingBlock?.Invoke();
         // ActivityBlockContext.Events.WaitForPurchase?.Invoke(false);
     }
     public void OnBuyIAPSuccess(Product product)
@@ -131,13 +230,15 @@ public class PurchaserCallbacks
         decimal num = product.metadata.localizedPrice;
         string currencyCode = product.metadata.isoCurrencyCode;
 
-#if RELEASE_ONLY
-        if(!PlayerHelperActive.Instance.GetIsHelperActive())
-        {
-            AppsFlyerManager.TrackAppsFlyerPurchase(productID, num, currencyCode);
-        }
-#endif
 
+#if RELEASE_ONLY
+        if (PlayerHelperActive.Instance.GetIsHelperActive())
+        {
+            return;
+        }
+        AppsFlyerManager.TrackAppsFlyerPurchase(productID, num, currencyCode);
+#endif
+        
         EventManager.TriggerEvent("BuyIAPSuccess");
         // InGameAnalyticController.EventTrackIAPConfirm?.Invoke(productID, "shop");
         

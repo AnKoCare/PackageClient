@@ -21,8 +21,18 @@ public class AppsFlyerManualObject : MonoBehaviour, IAppsFlyerConversionData
     public bool getConversionData;
     //******************************//
 
+    public event Action<string> ConversionDataSucceeded;
+
+    /// <summary>
+    /// AppsFlyer đã trả kết quả conversion (thành công hay lỗi) trong phiên này chưa. Code lấy camp name từ nguồn khác
+    /// (vd. server) nên chờ cờ này, để không gọi server trong lúc AF sắp trả campaign.
+    /// </summary>
+    public static bool HasConversionResult { get; private set; }
+
     private void Start()
     {
+        // Editor tắt Domain Reload thì static giữ nguyên giữa các lần Play.
+        HasConversionResult = false;
         // These fields are set from the editor so do not modify!
         //******************************//
         AppsFlyer.setIsDebug(isDebug);
@@ -36,6 +46,13 @@ public class AppsFlyerManualObject : MonoBehaviour, IAppsFlyerConversionData
         //******************************/
 
         AppsFlyer.startSDK();
+
+        if (!PlayerPrefs.HasKey("af_first_open_sent"))
+        {
+            AppsFlyerManager.TrackFirstOpen();
+            PlayerPrefs.SetInt("af_first_open_sent", 1);
+            PlayerPrefs.Save();
+        }
     }
 
     // Mark AppsFlyer CallBacks
@@ -45,11 +62,81 @@ public class AppsFlyerManualObject : MonoBehaviour, IAppsFlyerConversionData
         Debug.Log("didReceiveConversionData: " + conversionData);
         Dictionary<string, object> conversionDataDictionary = AppsFlyer.CallbackStringToDictionary(conversionData);
         // add deferred deeplink logic here
+
+        try
+        {
+            var status = "";
+            if (conversionDataDictionary.ContainsKey("af_status"))
+            {
+                status = conversionDataDictionary["af_status"].ToString();
+            }
+            var campaign = "";
+            if (conversionDataDictionary.ContainsKey("campaign"))
+            {
+                campaign = conversionDataDictionary["campaign"].ToString();
+            }
+            // AppsFlyer vẫn trả tên camp CŨ cho user đã được attribution trước khi UA đổi tên -> game chuẩn hoá qua hook.
+            if (SDKGameHooks.NormalizeCampaign != null) campaign = SDKGameHooks.NormalizeCampaign(campaign) ?? "";
+            var campaignID = "";
+            if (conversionDataDictionary.ContainsKey("campaign_id"))
+            {
+                campaignID = conversionDataDictionary["campaign_id"].ToString();
+            }
+            if (campaign.Length > 0)
+            {
+                UserPropertyManager.SetUserPropertyFirebase?.Invoke("camp_name", campaign);
+            }
+            if (campaignID.Length > 0)
+            {
+                UserPropertyManager.SetUserPropertyFirebase?.Invoke("camp_id", campaignID);
+            }
+
+            if (status.Length > 0)
+            {
+                UserPropertyManager.SetUserPropertyFirebase?.Invoke("user_source", status);
+            }
+            bool isFirstLaunch = false;
+            // save to player pref
+            if (campaign.Length > 0)
+            {
+                isFirstLaunch = string.IsNullOrEmpty(PlayerPrefs.GetString("af_campaign", ""));
+                PlayerPrefs.SetString("af_campaign", campaign);
+                PlayerPrefs.SetString(AppsFlyerManager.PrefKeyCampSource, AppsFlyerManager.CampSourceAppsFlyer);
+                // Tài liệu: af_get_campname mỗi user chỉ 1 lần, dù camp name đến từ AF hay server. Trước đây bắn ở
+                // MỌI lần mở app mà AF trả campaign.
+                AppsFlyerManager.TrackGetCampnameOnce(AppsFlyerManager.CampSourceAppsFlyer);
+            }
+            if (campaignID.Length > 0)
+            {
+                PlayerPrefs.SetString("af_campaignID", campaignID);
+            }
+
+            if (status.Length > 0)
+            {
+                PlayerPrefs.SetString("af_status", status);
+            }
+            PlayerPrefs.Save();
+            // Game lưu campaign vào config riêng và fetch lại remote config khi lần đầu nhận campaign.
+            if (campaign.Length > 0 || campaignID.Length > 0)
+            {
+                SDKGameHooks.OnCampaignReceived?.Invoke(campaign, campaignID, isFirstLaunch);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+        }
+        finally
+        {
+            HasConversionResult = true;
+            ConversionDataSucceeded?.Invoke(conversionData);
+        }
     }
 
     public void onConversionDataFail(string error)
     {
         AppsFlyer.AFLog("didReceiveConversionDataWithError", error);
+        HasConversionResult = true;
     }
 
     public void onAppOpenAttribution(string attributionData)

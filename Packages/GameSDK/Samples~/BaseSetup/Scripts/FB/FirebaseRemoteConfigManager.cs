@@ -16,7 +16,12 @@ namespace SDK
             Dictionary<string, object> defaults =
                 new Dictionary<string, object>
                 {
-                    { Keys.key_inter_show_level, 6 },
+                    { Keys.key_inter_show_level, 20 },
+                    { Keys.is_use_ads, true },
+                    { Keys.is_show_ads_fill_heart, false },
+                    { Keys.default_x2_coin_level, 13 },
+                    { Keys.key_inter_capping, 30 },
+                    { Keys.key_inter_capping_after_reward, 30 },
                 };
 
             FirebaseRemoteConfig remoteConfig = FirebaseRemoteConfig.DefaultInstance;

@@ -63,6 +63,7 @@ namespace SDK
             Instance = this;
             transform.SetParent(null);
             DontDestroyOnLoad(gameObject);
+            BannerRedirectGuard = new BannerRedirectGuard(m_BannerRedirectSuspectWindow);
             EventManager.StartListening("UpdateRemoteConfigs", UpdateRemoteConfigs);
             m_IsActiveInterruptReward = true;
             LoadRemoveAds();
@@ -137,6 +138,7 @@ namespace SDK
             }
 
             UpdateBanner();
+            UpdateBannerRedirectGuard();
             UpdateCollapsibleBanner(dt);
         }
 
@@ -621,19 +623,82 @@ namespace SDK
         private bool m_IsBannerRetryScheduled;
         private int m_BannerRetryExponent;
 
+        // Y dinh hien banner cua game. Can nho lai vi luc game goi Show co the banner chua co fill;
+        // khi banner load xong sau do thi OnBannerLoadedSuccess se tu hien lai.
+        private bool m_WantBannerShown;
+
+        // Da goi RequestBanner va dang cho callback tu mediation.
+        private bool m_IsBannerRequestInFlight;
+        private const float bannerRequestTimeout = 30f;
+
+        // Da tung load duoc banner ke tu lan init/destroy gan nhat.
+        // isBannerLoaded chi phan anh KET QUA LAN LOAD GAN NHAT, khong phai "co banner tren man hinh".
+        private bool m_HasBannerEverLoaded;
+
+        // App roi foreground / banner tu expand trong khoang nay sau khi creative moi load ma khong co click
+        // -> nghi banner tu redirect. Tang len se bat duoc redirect tre hon nhung bat nham nguoi bam Home nhieu hon.
+        [BoxGroup("Banner Redirect Guard")] [SerializeField] private float m_BannerRedirectSuspectWindow = 3f;
+        // Tat thi chi log event, khong tat banner. Mac dinh tat: du lieu 18/10 cho thay trigger "pause" chu yeu la
+        // nguoi choi tu roi app (trung binh ~1.5s o moi network), bat len se xoa banner oan cua rat nhieu session.
+        [BoxGroup("Banner Redirect Guard")] [SerializeField] private bool m_SuppressBannerOnRedirectSuspect = false;
+        public BannerRedirectGuard BannerRedirectGuard { get; private set; }
+
+        // Da phat hien banner tu redirect trong session nay -> khong hien banner nua cho toi lan mo app sau.
+        private bool m_IsBannerSuppressedForSession;
+
+        private bool CanBannerRedirectBeSuspected()
+        {
+            return m_WantBannerShown && isBannerLoaded && !IsShowingAds && !IsRemoveAds && !m_IsBannerSuppressedForSession;
+        }
+
+        private void UpdateBannerRedirectGuard()
+        {
+            if (BannerRedirectGuard == null || !BannerRedirectGuard.Tick()) return;
+            if (!m_SuppressBannerOnRedirectSuspect) return;
+
+            SDKDebugLogger.Log("Banner nghi auto-redirect -> tat banner toi het session");
+            // Destroy chu khong chi Hide: creative xau van chay JS trong WebView bi an va co the redirect tiep.
+            DestroyBanner();
+            m_IsBannerSuppressedForSession = true;
+        }
+
         private void UpdateBanner()
         {
             if (IsRemoveAds) return;
             if (!BannerAdsConfig.isActive) return;
-            if (!m_IsBannerShowing && !m_IsBannerRetryScheduled) return;
-            if (!m_IsBannerRetryScheduled || isBannerLoaded) return;
+            if (isBannerLoaded) return;
+            // Chi retry khi game dang thuc su muon hien banner. Goi LoadBanner luc banner dang an
+            // se bi MAX bo qua (khong ban callback nao) nen retry o trang thai do la vo nghia.
+            if (!m_WantBannerShown) return;
+
+            // MAX KHONG go creative cu khi mot lan auto-refresh fail -> banner van dang hien tren man hinh,
+            // chi co lan nap moi la that bai. Truong hop nay de auto-refresh cua MAX tu fill lai,
+            // retry thu cong o day chi gay spam request + spam log va day exponent len tran.
+            if (m_HasBannerEverLoaded && m_IsBannerShowing) return;
 
             BannerCountTime += Time.deltaTime;
+
+            if (m_IsBannerRequestInFlight)
+            {
+                // Dang cho phan hoi -> khong ban them request, tranh spam LoadBanner.
+                if (BannerCountTime < bannerRequestTimeout) return;
+
+                // Qua han ma khong co callback nao (request bi mediation nuot) -> arm lai de thu tiep.
+                SDKDebugLogger.Log($"Banner request timeout after {bannerRequestTimeout}s - khong co callback, arm lai retry");
+                m_IsBannerRequestInFlight = false;
+                m_IsBannerRetryScheduled = true;
+                BannerCountTime = 0;
+                return;
+            }
+
+            if (!m_IsBannerRetryScheduled) return;
+
             float retryDelay = Mathf.Pow(2, m_BannerRetryExponent);
             if (BannerCountTime < retryDelay) return;
 
             BannerCountTime = 0;
             m_IsBannerRetryScheduled = false;
+            m_IsBannerRequestInFlight = true;
             m_BannerRetryExponent = Mathf.Min(m_BannerRetryExponent + 1, maxBannerRetryExponent);
             SDKDebugLogger.Log($"Banner retry after {retryDelay}s (next exponent: {m_BannerRetryExponent})");
             RequestBanner();
@@ -658,7 +723,9 @@ namespace SDK
                     OnBannerClicked);
             }
 
-            HideBannerAds();
+            // Chi an banner view luc init, KHONG xoa m_WantBannerShown: game co the da goi
+            // ShowBannerAds truoc khi MAX SDK init xong, y dinh do phai duoc giu lai.
+            GetSelectedMediation(AdsType.BANNER)?.HideBannerAds();
             SDKDebugLogger.Log("Setup Banner Done");
         }
 
@@ -671,21 +738,32 @@ namespace SDK
         public void RequestBanner()
         {
             if (!BannerAdsConfig.isActive) return;
-            GetSelectedMediation(AdsType.BANNER).RequestBannerAds();
+            if (IsRemoveAds || m_IsBannerSuppressedForSession) return;
+            GetSelectedMediation(AdsType.BANNER)?.RequestBannerAds();
         }
 
         public void ShowBannerAds()
         {
             SDKDebugLogger.Log(("Call Show Banner Ads"));
-            if (IsCheatAds || IsRemoveAds) return;
+            if (IsCheatAds || IsRemoveAds || m_IsBannerSuppressedForSession) return;
+            m_WantBannerShown = true;
             GetSelectedMediation(AdsType.BANNER)?.ShowBannerAds();
 
-            BannerCountTime = 0;
+            // Chua co fill va cung chua co chu ky retry nao dang chay -> bat dau dem tu bay gio.
+            if (!isBannerLoaded && !m_IsBannerRequestInFlight && !m_IsBannerRetryScheduled)
+            {
+                BannerCountTime = 0;
+                m_IsBannerRetryScheduled = true;
+            }
         }
 
         public void HideBannerAds()
         {
             SDKDebugLogger.Log(("Call Hide Banner Ads"));
+            m_WantBannerShown = false;
+            m_IsBannerShowing = false;
+            // Banner da bi destroy vi redirect -> khong con view nao de an
+            if (m_IsBannerSuppressedForSession) return;
             GetSelectedMediation(AdsType.BANNER)?.HideBannerAds();
 
         }
@@ -693,8 +771,11 @@ namespace SDK
         public void DestroyBanner()
         {
             GetSelectedMediation(AdsType.BANNER)?.DestroyBannerAds();
+            m_WantBannerShown = false;
             m_IsBannerShowing = false;
+            m_HasBannerEverLoaded = false;
             m_IsBannerRetryScheduled = false;
+            m_IsBannerRequestInFlight = false;
             m_BannerRetryExponent = 0;
             BannerCountTime = 0;
         }
@@ -710,8 +791,18 @@ namespace SDK
             SDKDebugLogger.Log("Banner Loaded");
             BannerCountTime = 0;
             isBannerLoaded = true;
+            m_HasBannerEverLoaded = true;
             m_IsBannerRetryScheduled = false;
+            m_IsBannerRequestInFlight = false;
             m_BannerRetryExponent = 0;
+
+            // Game da yeu cau hien banner tu truoc (luc do chua co fill) -> hien lai ngay bay gio.
+            // Thieu doan nay la nguyen nhan chinh khien banner bien mat han sau mot lan load fail.
+            if (m_WantBannerShown)
+            {
+                SDKDebugLogger.Log("Banner Loaded - re-show vi game da yeu cau hien banner truoc do");
+                ShowBannerAds();
+            }
         }
 
         private void OnBannerLoadedFail()
@@ -720,6 +811,7 @@ namespace SDK
             BannerCountTime = 0;
             isBannerLoaded = false;
 
+            m_IsBannerRequestInFlight = false;
             m_IsBannerRetryScheduled = true;
             SDKDebugLogger.Log($"Banner will retry in {Mathf.Pow(2, m_BannerRetryExponent)}s (exponent: {m_BannerRetryExponent})");
         }
@@ -734,6 +826,7 @@ namespace SDK
         private void OnBannerClicked()
         {
             SDKDebugLogger.Log("Banner Clicked");
+            BannerRedirectGuard?.OnBannerClicked();
             m_IsShowingAds = true;
         }
 
@@ -746,6 +839,7 @@ namespace SDK
         private void OnBannerExpanded()
         {
             SDKDebugLogger.Log("Banner Expanded");
+            BannerRedirectGuard?.OnBannerExpanded(CanBannerRedirectBeSuspected());
         }
 
         private void OnBannerCollapsed()
@@ -1470,6 +1564,8 @@ namespace SDK
         {
             SDKDebugLogger.Log("Paid Ad Revenue - Ads Type = " + impressionData.ad_type);
             AnalyticsManager.TrackAdImpression(impressionData);
+            // Game nhận doanh thu từng impression (vd. Google Ads value bidding: cộng dồn doanh thu, đếm interstitial)
+            SDKGameHooks.OnAdRevenuePaid?.Invoke(impressionData.ad_revenue, impressionData.ad_format);
 #if UNITY_APPSFLYER
             AppsFlyerManager.TrackAppsflyerAdRevenue(impressionData);
 #endif
@@ -1480,6 +1576,15 @@ namespace SDK
             SDKDebugLogger.Log("OnApplicationPause " + paused +
                       "Resume Ads Type = " + resumeAdsType +
                       " Is Showing Ads = " + IsShowingAds);
+            if (paused)
+            {
+                BannerRedirectGuard?.OnAppPaused(CanBannerRedirectBeSuspected());
+            }
+            else
+            {
+                BannerRedirectGuard?.OnAppResumed();
+            }
+
             switch (paused)
             {
                 case true:

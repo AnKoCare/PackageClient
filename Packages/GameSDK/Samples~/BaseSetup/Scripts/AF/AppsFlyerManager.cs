@@ -10,7 +10,7 @@ using AppsFlyerSDK;
 
 namespace SDK
 {
-// #if UNITY_APPSFLYER
+    // #if UNITY_APPSFLYER
     public static class AppsFlyerManager
     {
         #region Platform Mapping
@@ -44,6 +44,7 @@ namespace SDK
         public const string af_first_open = "af_first_open";
         public const string af_level_start = "af_level_start";
         public const string af_level_achieved = "af_level_achieved";
+        public const string af_get_campname = "af_get_campname";
 
 
         /// <summary>
@@ -61,7 +62,8 @@ namespace SDK
         {
             SendEvent(af_inters_displayed);
         }
-        public static void TrackInterstitial_ShowCount(int total) {
+        public static void TrackInterstitial_ShowCount(int total)
+        {
             SDKDebugLogger.Log("TrackInterstitial_ShowCount " + total);
             if (total == 0) return;
             if (total <= 20)
@@ -85,7 +87,7 @@ namespace SDK
 
         public static void TrackFirstOpen()
         {
-            SendEvent(af_first_open); 
+            SendEvent(af_first_open);
         }
         public static void TrackLevelStart(int level)
         {
@@ -126,7 +128,8 @@ namespace SDK
                 SendEvent("af_rewarded_view_40");
             }
         }
-        public static void TrackAppsFlyerPurchase(string purchaseId, decimal cost, string currency) {
+        public static void TrackAppsFlyerPurchase(string purchaseId, decimal cost, string currency)
+        {
             float fCost = (float)cost;
             fCost *= 0.65f;
             Dictionary<string, string> eventValue = new Dictionary<string, string>();
@@ -175,6 +178,37 @@ namespace SDK
                 string eventPassLevelName = $"pass_level_{level}";
                 SendEvent(eventPassLevelName);
             }
+        }
+        
+        public static void TrackGetCampname()
+        {
+            string campname = PlayerPrefs.GetString("af_campaign", string.Empty);
+            SendEvent(af_get_campname, new Dictionary<string, string> { { "campname", campname } });
+        }
+
+        public const string PrefKeyCampSource = "camp_source";
+        public const string CampSourceAppsFlyer = "af";
+        private const string PrefKeyGetCampnameSent = "af_get_campname_sent";
+
+        /// <summary>
+        /// af_get_campname mỗi user chỉ bắn 1 lần, dù camp name đến từ AppsFlyer hay nguồn khác (server...).
+        /// Dùng chung key PlayerPrefs "af_get_campname_sent" để các nguồn không bắn trùng.
+        /// </summary>
+        public static void TrackGetCampnameOnce(string source)
+        {
+            if (PlayerPrefs.GetInt(PrefKeyGetCampnameSent, 0) == 1) return;
+
+            string campaign = PlayerPrefs.GetString("af_campaign", string.Empty);
+            if (string.IsNullOrEmpty(campaign)) return;
+
+            SendEvent(af_get_campname, new Dictionary<string, string>
+            {
+                { "campname", campaign },
+                { "source", source },
+            });
+
+            PlayerPrefs.SetInt(PrefKeyGetCampnameSent, 1);
+            PlayerPrefs.Save();
         }
         #endregion
 

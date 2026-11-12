@@ -64,15 +64,45 @@ MonoBehaviour:
   IsLinkRewardWithRemoveAds: 0
   resumeAdsType: 0
   m_MainAdsMediationType: 1
-  m_AdsConfigs: []
+  m_AdsConfigs:
+  - adsType: 0
+    adsMediationType: 1
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
+  - adsType: 1
+    adsMediationType: 1
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
+  - adsType: 2
+    adsMediationType: 1
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
+  - adsType: 3
+    adsMediationType: 0
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
+  - adsType: 4
+    adsMediationType: 0
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
+  - adsType: 5
+    adsMediationType: 0
+    isActive: 1
+    maxReloadTime: 3
+    adsMediations: []
   m_AdsMediationControllers:
   - {fileID: 1664383872516899532}
   - {fileID: 361701755393429063}
   IsAutoRefreshCollapsibleBanner: 0
   IsAutoRefreshExtendCollapsibleBanner: 0
-  m_AutoRefreshTimeCollapsibleBanner: 0
+  m_AutoRefreshTimeCollapsibleBanner: 30
   IsAutoCloseCollapsibleBanner: 0
-  m_AutoCloseTimeCollapsibleBanner: 20
+  m_AutoCloseTimeCollapsibleBanner: 30
   IsActiveResumeAdsIngame: 0
 --- !u!1 &5570945614407336880
 GameObject:
@@ -203,4 +233,4 @@ MonoBehaviour:
     rewardLoaded: 0
     rewardAdsUnit: []
     interstitialAdsUnit: []
-  m_BannerPosition: 0
+  m_BannerPosition: 7
