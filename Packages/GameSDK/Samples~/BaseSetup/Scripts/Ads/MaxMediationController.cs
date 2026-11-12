@@ -32,6 +32,19 @@ namespace SDK {
         private CancellationTokenSource m_InterstitialLoadTimeoutCts;
         private string m_CurrentLoadingInterstitialAdUnitId;
 
+        // Uu tien load N unit inter dau trong cua so capping (port tu Skewer, 2026-11-12):
+        //  * con capping > fallbackBefore giay -> chi thu N unit dau (unit floor cao); unit nao co ads thi giu san, het
+        //    capping moi show; ca N unit no-fill -> doi retryDelay giay roi thu lai tu unit 1;
+        //  * den moc con fallbackBefore giay ma van chua co ads -> roi xuong luong thuong, load tiep unit N+1..het;
+        //  * con capping <= fallbackBefore giay (hoac het capping) -> luong thuong, load tuan tu unit 1 -> het.
+        // Tham so lay tu AdsController (InterPriorityUnits / RetryDelay / FallbackBefore); day la gia tri du phong.
+        private const int INTER_PRIORITY_UNITS_DEFAULT = 2;
+        private const float INTER_PRIORITY_RETRY_DELAY_DEFAULT = 20f;
+        private const float INTER_PRIORITY_FALLBACK_BEFORE_DEFAULT = 10f;
+        [FoldoutGroup("Interstitial")] [ShowInInspector] private bool m_IsInterstitialPriorityMode = false;
+        private CancellationTokenSource m_InterstitialPriorityRetryCts;
+        private CancellationTokenSource m_InterstitialPriorityDeadlineCts;
+
         public override void Init()
         {
             if (IsInited) return;
@@ -156,7 +169,7 @@ namespace SDK {
             }
             if (m_InterstitialOrder.Count == 0)
             {
-                SDKDebugLogger.Log("LoadInterstitialFirst aborted: no interstitial ad units configured");
+                InterLog("Khong co interstitial ad unit nao duoc cau hinh -> khong load");
                 isWaitLoadInterstitialUntilAvailable = false;
                 return;
             }
@@ -164,6 +177,10 @@ namespace SDK {
             isWaitLoadInterstitialUntilAvailable = true;
 
             SDKDebugLogger.Log($"LoadInterstitialFirst");
+
+            // Moi lan quay ve index 0 danh gia lai: con capping > nguong thi chi thu N unit dau
+            CancelInterstitialPriorityRetry();
+            EvaluateInterstitialPriorityMode();
 
             m_CurrentLoadingIndexInterstitial = 0;
 
@@ -176,15 +193,16 @@ namespace SDK {
             if (!isReady)
             {
                 m_CurrentLoadingInterstitialAdUnitId = adUnitId;
-                SDKDebugLogger.Log($"Start loading interstitial ad at index 0: {adUnitId}");
+                InterLog($"LOAD {InterUnitLabel(0)}");
                 MaxSdk.LoadInterstitial(adUnitId);
                 StartInterstitialLoadTimeout();
             }
             else
             {
                 m_CurrentLoadingInterstitialAdUnitId = null;
-                SDKDebugLogger.Log($"Interstitial ad at index 0 already ready: {adUnitId}");
+                InterLog($"{InterUnitLabel(0)} da co ads san -> khong load them, cho show");
                 isWaitLoadInterstitialUntilAvailable = false;
+                StopInterstitialPriority();
             }
         }
 
@@ -211,7 +229,7 @@ namespace SDK {
             {
                 m_CurrentLoadingIndexInterstitial = index;
                 m_CurrentLoadingInterstitialAdUnitId = adUnitId;
-                SDKDebugLogger.Log($"Start loading interstitial ad at index {index}: {adUnitId}");
+                InterLog($"LOAD {InterUnitLabel(index)}");
                 MaxSdk.LoadInterstitial(adUnitId);
                 StartInterstitialLoadTimeout();
             }
@@ -219,7 +237,8 @@ namespace SDK {
             {
                 m_CurrentLoadingInterstitialAdUnitId = null;
                 isWaitLoadInterstitialUntilAvailable = false;
-                SDKDebugLogger.Log($"Interstitial ad at index {index} already ready: {adUnitId}");
+                InterLog($"{InterUnitLabel(index)} da co ads san -> khong load them, cho show");
+                StopInterstitialPriority();
             }
         }
 
@@ -243,24 +262,233 @@ namespace SDK {
             try
             {
                 await UniTask.Delay(TimeSpan.FromSeconds(LOAD_AD_TIMEOUT_SECONDS), cancellationToken: token);
-                SDKDebugLogger.Log($"Interstitial load timeout after {LOAD_AD_TIMEOUT_SECONDS}s at index {m_CurrentLoadingIndexInterstitial} - moving to next ad unit");
+                InterLog($"TIMEOUT {LOAD_AD_TIMEOUT_SECONDS:F0}s {InterUnitLabel(m_CurrentLoadingIndexInterstitial)} khong tra loi -> coi nhu no-fill");
                 // Bug1 fix: timeout thi di tiep index ke tiep, khong reset ve 0
                 m_CurrentLoadingInterstitialAdUnitId = null;
-                int nextIndex = m_CurrentLoadingIndexInterstitial + 1;
-                if (nextIndex < m_InterstitialOrder.Count)
-                {
-                    LoadInterstitialAtIndex(nextIndex);
-                }
-                else
-                {
-                    isWaitLoadInterstitialUntilAvailable = false;
-                    LoadInterstitialFirst(); // restart tu index 0 sau delay, tranh spam request
-                }
+                ContinueInterstitialAfterNoFill();
             }
             catch (OperationCanceledException)
             {
             }
         }
+
+        #region Interstitial priority (capping window)
+
+        // Log luong inter, chi hien khi bat SDK_DEBUG_ENABLED trong SDKDebugLogger (release dang tat).
+        private void InterLog(string message)
+        {
+            string mode = m_IsInterstitialPriorityMode ? "PRIORITY" : "NORMAL";
+            SDKDebugLogger.Log($"[INTER] {message} | capping={GetInterCappingRemaining():F0}s mode={mode}");
+        }
+
+        private string InterUnitLabel(int index)
+        {
+            if (index < 0 || index >= m_InterstitialOrder.Count) return $"unit ?/{m_InterstitialOrder.Count}";
+            return $"unit {index + 1}/{m_InterstitialOrder.Count} ({m_InterstitialOrder[index]})";
+        }
+
+        private string InterUnitLabel(string adUnitId)
+        {
+            return InterUnitLabel(m_InterstitialOrder.IndexOf(adUnitId));
+        }
+
+        // Capping inter thuc te cua game nam o AdsController.InterCooldown (giay, giam theo Time.deltaTime; dat lai khi show
+        // inter, cong them InterCappingAfterReward khi xem xong rewarded).
+        private float GetInterCappingRemaining()
+        {
+            AdsController controller = AdsController.Instance;
+            if (controller == null) return 0f;
+            return Mathf.Max(0f, controller.InterCooldown);
+        }
+
+        private void GetInterPriorityConfig(out int units, out float retryDelay, out float fallbackBefore)
+        {
+            // Tham so o AdsController (gia tri trong scene, ghi de boi Remote Config key inter_priority_config).
+            AdsController controller = AdsController.Instance;
+            units = controller != null ? controller.InterPriorityUnits : INTER_PRIORITY_UNITS_DEFAULT;
+            retryDelay = controller != null ? controller.InterPriorityRetryDelay : INTER_PRIORITY_RETRY_DELAY_DEFAULT;
+            fallbackBefore = controller != null ? controller.InterPriorityFallbackBefore : INTER_PRIORITY_FALLBACK_BEFORE_DEFAULT;
+
+            units = Mathf.Clamp(units, 0, m_InterstitialOrder.Count);
+            retryDelay = Mathf.Max(1f, retryDelay);
+            fallbackBefore = Mathf.Max(0f, fallbackBefore);
+        }
+
+        // Goi moi lan pipeline quay ve index 0. Con capping > nguong fallback -> chi thu N unit dau.
+        private void EvaluateInterstitialPriorityMode()
+        {
+            GetInterPriorityConfig(out int units, out _, out float fallbackBefore);
+            float remaining = GetInterCappingRemaining();
+            m_IsInterstitialPriorityMode = units > 0 && remaining > fallbackBefore;
+
+            if (m_IsInterstitialPriorityMode)
+            {
+                InterLog($"PRIORITY ON: capping con {remaining:F0}s > {fallbackBefore:F0}s -> chi thu {units} unit dau, moc fallback sau {remaining - fallbackBefore:F0}s");
+                StartInterstitialPriorityDeadline(remaining - fallbackBefore);
+            }
+            else
+            {
+                CancelInterstitialPriorityDeadline();
+                if (units <= 0)
+                {
+                    InterLog("NORMAL: interPriorityUnits = 0 (tat uu tien) -> load tuan tu tu unit 1");
+                }
+                else
+                {
+                    InterLog($"NORMAL: capping con {remaining:F0}s <= {fallbackBefore:F0}s -> load tuan tu tu unit 1");
+                }
+            }
+        }
+
+        // Da co inter san sang -> khong can uu tien nua, huy moi timer cua che do nay.
+        private void StopInterstitialPriority()
+        {
+            m_IsInterstitialPriorityMode = false;
+            CancelInterstitialPriorityDeadline();
+            CancelInterstitialPriorityRetry();
+        }
+
+        // Goi sau khi unit dang load bao no-fill (fail callback hoac timeout). Quyet dinh buoc ke tiep.
+        private void ContinueInterstitialAfterNoFill()
+        {
+            int nextIndex = m_CurrentLoadingIndexInterstitial + 1;
+
+            if (m_IsInterstitialPriorityMode)
+            {
+                GetInterPriorityConfig(out int units, out float retryDelay, out float fallbackBefore);
+                if (nextIndex >= units)
+                {
+                    float remaining = GetInterCappingRemaining();
+                    if (remaining > fallbackBefore)
+                    {
+                        InterLog($"{units} unit dau deu no-fill, capping con {remaining:F0}s -> DOI {retryDelay:F0}s roi thu lai tu unit 1");
+                        StartInterstitialPriorityRetry(retryDelay);
+                        return;
+                    }
+
+                    m_IsInterstitialPriorityMode = false;
+                    CancelInterstitialPriorityDeadline();
+                    InterLog($"PRIORITY OFF: capping con {remaining:F0}s <= {fallbackBefore:F0}s -> FALLBACK load {InterUnitLabel(nextIndex)}");
+                }
+            }
+
+            LoadInterstitialFromIndexOrRestart(nextIndex);
+        }
+
+        private void LoadInterstitialFromIndexOrRestart(int index)
+        {
+            if (index < m_InterstitialOrder.Count)
+            {
+                SDKDebugLogger.Log($"Loading next interstitial ad at index {index}");
+                LoadInterstitialAtIndex(index);
+            }
+            else
+            {
+                InterLog($"Ca {m_InterstitialOrder.Count} unit deu no-fill -> doi {LOAD_AD_FIRST_DELAY_SECONDS:F0}s roi quay lai unit 1");
+                isWaitLoadInterstitialUntilAvailable = false;
+                LoadInterstitialFirst(); // restart co delay, tranh vong lap request lien tuc
+            }
+        }
+
+        private void StartInterstitialPriorityRetry(float delaySeconds)
+        {
+            CancelInterstitialPriorityRetry();
+            // Giu isWaitLoadInterstitialUntilAvailable = true trong luc doi de khong co pipeline thu hai chay song song
+            m_CurrentLoadingInterstitialAdUnitId = null;
+            m_InterstitialPriorityRetryCts = new CancellationTokenSource();
+            InterstitialPriorityRetryAsync(delaySeconds, m_InterstitialPriorityRetryCts.Token).Forget();
+        }
+
+        private void CancelInterstitialPriorityRetry()
+        {
+            if (m_InterstitialPriorityRetryCts == null) return;
+            m_InterstitialPriorityRetryCts.Cancel();
+            m_InterstitialPriorityRetryCts.Dispose();
+            m_InterstitialPriorityRetryCts = null;
+        }
+
+        private async UniTaskVoid InterstitialPriorityRetryAsync(float delaySeconds, CancellationToken token)
+        {
+            try
+            {
+                await UniTask.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken: token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (m_InterstitialPriorityRetryCts != null && m_InterstitialPriorityRetryCts.Token == token)
+            {
+                m_InterstitialPriorityRetryCts.Dispose();
+                m_InterstitialPriorityRetryCts = null;
+            }
+
+            InterLog("Het thoi gian doi -> thu lai tu unit 1");
+            isWaitLoadInterstitialUntilAvailable = false;
+            LoadInterstitialFirst(true);
+        }
+
+        private void StartInterstitialPriorityDeadline(float seconds)
+        {
+            CancelInterstitialPriorityDeadline();
+            m_InterstitialPriorityDeadlineCts = new CancellationTokenSource();
+            InterstitialPriorityDeadlineAsync(Mathf.Max(0f, seconds), m_InterstitialPriorityDeadlineCts.Token).Forget();
+        }
+
+        private void CancelInterstitialPriorityDeadline()
+        {
+            if (m_InterstitialPriorityDeadlineCts == null) return;
+            m_InterstitialPriorityDeadlineCts.Cancel();
+            m_InterstitialPriorityDeadlineCts.Dispose();
+            m_InterstitialPriorityDeadlineCts = null;
+        }
+
+        // Den moc "con fallbackBefore giay capping": neu van chua co ads thi roi xuong luong thuong tu unit N+1.
+        private async UniTaskVoid InterstitialPriorityDeadlineAsync(float seconds, CancellationToken token)
+        {
+            try
+            {
+                await UniTask.Delay(TimeSpan.FromSeconds(seconds), cancellationToken: token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (!m_IsInterstitialPriorityMode) return;
+            if (IsInterstitialLoaded())
+            {
+                StopInterstitialPriority();
+                return;
+            }
+
+            GetInterPriorityConfig(out int units, out _, out float fallbackBefore);
+            float remaining = GetInterCappingRemaining();
+            if (remaining > fallbackBefore)
+            {
+                // Rewarded vua cong them capping -> dat lai moc, van uu tien
+                InterLog($"Capping duoc cong them (rewarded), con {remaining:F0}s -> dat lai moc fallback sau {remaining - fallbackBefore:F0}s, van uu tien");
+                StartInterstitialPriorityDeadline(remaining - fallbackBefore);
+                return;
+            }
+
+            m_IsInterstitialPriorityMode = false;
+            if (m_InterstitialPriorityRetryCts != null)
+            {
+                // Dang doi giua cac vong uu tien -> cat ngan, load unit ke tiep ngay
+                CancelInterstitialPriorityRetry();
+                InterLog($"PRIORITY OFF (den moc): capping con {remaining:F0}s -> cat cho, FALLBACK load {InterUnitLabel(units)}");
+                LoadInterstitialFromIndexOrRestart(units);
+            }
+            else
+            {
+                // Dang co request in-flight: callback/timeout sap toi se di tiep theo luong thuong
+                InterLog($"PRIORITY OFF (den moc): capping con {remaining:F0}s, {InterUnitLabel(m_CurrentLoadingIndexInterstitial)} dang cho ket qua -> sau do di tiep luong thuong");
+            }
+        }
+
+        #endregion
 
         private void ShowInterstitialReady()
         {
@@ -270,16 +498,15 @@ namespace SDK {
                 string adUnitId = m_InterstitialOrder[i];
                 if (MaxSdk.IsInterstitialReady(adUnitId))
                 {
-                    SDKDebugLogger.Log("Show MAX Interstitial with AdUnit: " + adUnitId);
+                    InterLog($"SHOW {InterUnitLabel(i)} placement={m_InterstitialPlacement}");
                     m_InterstitialReadyMap[adUnitId] = false;
                     MaxSdk.ShowInterstitial(adUnitId, m_InterstitialPlacement);
                     return;
                 }
             }
 
-            Debug.Log("No interstitial ad ready to show");
+            InterLog("KHONG co inter nao san de show -> bao fail, load lai tu unit 1");
             m_InterstitialAdShowFailCallback?.Invoke();
-            Debug.Log("Reload Interstitial after show fail");
             LoadInterstitialFirst(true);
         }
 
@@ -319,65 +546,55 @@ namespace SDK {
 
         private void OnInterstitialLoadedEvent(string adUnitId, MaxSdkBase.AdInfo adInfo)
         {
-            SDKDebugLogger.Log("Load MAX Interstitial Success: " + adUnitId);
             m_InterstitialReadyMap[adUnitId] = true;
             revenueInterstitial = adInfo.Revenue;
-            SDKDebugLogger.Log("Revenue Interstitial: " + revenueInterstitial);
 
             EventManager.AddEventNextFrame(m_InterstitialAdLoadSuccessCallback);
 
             // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
             if (adUnitId != m_CurrentLoadingInterstitialAdUnitId)
             {
-                SDKDebugLogger.Log($"Stale interstitial loaded callback: {adUnitId}, current loading: {m_CurrentLoadingInterstitialAdUnitId ?? "none"}");
+                InterLog($"LOADED (stale) {InterUnitLabel(adUnitId)} network={adInfo.NetworkName} - request hien tai la {InterUnitLabel(m_CurrentLoadingInterstitialAdUnitId)}, giu ads nhung khong doi pipeline");
                 return;
             }
+
+            InterLog($"LOADED {InterUnitLabel(adUnitId)} network={adInfo.NetworkName} revenue={adInfo.Revenue} -> dung load, cho show");
 
             CancelInterstitialLoadTimeout();
             m_CurrentLoadingInterstitialAdUnitId = null;
             isWaitLoadInterstitialUntilAvailable = false;
+            StopInterstitialPriority();
         }
 
         private void OnInterstitialLoadFailedEvent(string adUnitId, MaxSdkBase.ErrorInfo errorInfo)
         {
-            SDKDebugLogger.Log("Load MAX Interstitial Fail: " + adUnitId);
             m_InterstitialReadyMap[adUnitId] = false;
             EventManager.AddEventNextFrame(m_InterstitialAdLoadFailCallback);
 
             // Bug3 fix: callback stale (cua request cu) - khong duoc cancel timeout / dong pipeline hien tai
             if (adUnitId != m_CurrentLoadingInterstitialAdUnitId)
             {
-                SDKDebugLogger.Log($"Stale interstitial fail callback: {adUnitId}, current loading: {m_CurrentLoadingInterstitialAdUnitId ?? "none"}");
+                InterLog($"NO-FILL (stale) {InterUnitLabel(adUnitId)} code={errorInfo.Code} - request hien tai la {InterUnitLabel(m_CurrentLoadingInterstitialAdUnitId)}, bo qua");
                 return;
             }
 
+            InterLog($"NO-FILL {InterUnitLabel(adUnitId)} code={errorInfo.Code} msg={errorInfo.Message}");
+
             CancelInterstitialLoadTimeout();
             m_CurrentLoadingInterstitialAdUnitId = null;
-
-            int nextIndex = m_CurrentLoadingIndexInterstitial + 1;
-            if (nextIndex < m_InterstitialOrder.Count)
-            {
-                SDKDebugLogger.Log($"Loading next interstitial ad at index {nextIndex}");
-                LoadInterstitialAtIndex(nextIndex);
-            }
-            else
-            {
-                SDKDebugLogger.Log("All interstitial ads failed to load - restart after delay");
-                isWaitLoadInterstitialUntilAvailable = false;
-                LoadInterstitialFirst(); // restart co delay, tranh vong lap request lien tuc
-            }
+            ContinueInterstitialAfterNoFill();
         }
 
         private void InterstitialFailedToDisplayEvent(string adUnitId, MaxSdkBase.ErrorInfo errorInfo, MaxSdkBase.AdInfo adInfo)
         {
-            SDKDebugLogger.Log("unity-script: I got InterstitialAdShowFailedEvent, code :  " + errorInfo.Code + ", description : " + errorInfo.Message);
+            InterLog($"SHOW FAIL {InterUnitLabel(adUnitId)} code={errorInfo.Code} msg={errorInfo.Message} -> load lai sau {LOAD_AD_FIRST_DELAY_SECONDS:F0}s");
             EventManager.AddEventNextFrame(m_InterstitialAdShowFailCallback);
             LoadInterstitialFirst();
         }
 
         private void OnInterstitialDismissedEvent(string adUnitId, MaxSdkBase.AdInfo adInfo)
         {
-            SDKDebugLogger.Log("Interstitial dismissed");
+            InterLog($"Inter DONG {InterUnitLabel(adUnitId)} -> capping bat dau, load lai sau {LOAD_AD_FIRST_DELAY_SECONDS:F0}s");
             EventManager.AddEventNextFrame(m_InterstitialAdCloseCallback);
             LoadInterstitialFirst();
         }

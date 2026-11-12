@@ -20,6 +20,22 @@ public class AdsController : Singleton<AdsController>
     [field: SerializeField] public float InterCooldown {get; private set;}
     [field: SerializeField] public bool InterReady { get; private set; } = true;
     [field: SerializeField] public static bool InterJustShowed { get; set; } = false;
+
+    // Load inter uu tien trong capping (MaxMediationController): con capping > InterPriorityFallbackBefore giay thi chi
+    // thu InterPriorityUnits unit dau, ca nhom no-fill thi doi InterPriorityRetryDelay giay roi thu lai. 0 unit = tat.
+    // Remote Config key inter_priority_config ghi de gia tri nay; ten field giong ads_config cua Skewer:
+    // {"interPriorityUnits":2,"interPriorityRetryDelay":20,"interPriorityFallbackBefore":10}.
+    [field: SerializeField] public int InterPriorityUnits { get; private set; } = 2;
+    [field: SerializeField] public float InterPriorityRetryDelay { get; private set; } = 20f;
+    [field: SerializeField] public float InterPriorityFallbackBefore { get; private set; } = 10f;
+
+    [Serializable]
+    private class InterPriorityConfig
+    {
+        public int interPriorityUnits = 2;
+        public float interPriorityRetryDelay = 20f;
+        public float interPriorityFallbackBefore = 10f;
+    }
     private const string PrefKeyHasShownFirstInterEver = "ads_has_shown_first_inter_ever";
     private bool HasShownFirstInterEver
     {
@@ -64,6 +80,26 @@ public class AdsController : Singleton<AdsController>
         _baseInterCapping = (float)FirebaseManager.Instance.GetConfigValue(Keys.key_inter_capping).DoubleValue;
         _baseInterCappingAfterReward = (float)FirebaseManager.Instance.GetConfigValue(Keys.key_inter_capping_after_reward).DoubleValue;
         RefreshInterCapping();
+        LoadInterPriorityConfig();
+    }
+
+    private void LoadInterPriorityConfig()
+    {
+        string json = FirebaseManager.Instance.GetConfigValue(Keys.key_inter_priority_config).StringValue;
+        if (string.IsNullOrEmpty(json)) return;
+        try
+        {
+            InterPriorityConfig config = JsonUtility.FromJson<InterPriorityConfig>(json);
+            if (config == null) return;
+            InterPriorityUnits = Mathf.Max(0, config.interPriorityUnits);
+            InterPriorityRetryDelay = Mathf.Max(1f, config.interPriorityRetryDelay);
+            InterPriorityFallbackBefore = Mathf.Max(0f, config.interPriorityFallbackBefore);
+            SDKDebugLogger.Log($"[INTER] inter_priority_config: units={InterPriorityUnits} retry={InterPriorityRetryDelay}s fallbackBefore={InterPriorityFallbackBefore}s");
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"inter_priority_config JSON loi, giu gia tri mac dinh: {e.Message}");
+        }
     }
 
     private void RefreshInterCapping()

@@ -1,6 +1,6 @@
 {
   "name": "com.antq.ads.fb.af.iap.sdk",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "displayName": "ADS FB AF IAP SDK",
   "description": "Unity SDK t\u00edch h\u1ee3p qu\u1ea3ng c\u00e1o (AdMob, MAX, IronSource), Firebase Analytics, AppsFlyer v\u00e0 In-App Purchase",
   "unity": "6000.0",

@@ -22,6 +22,7 @@ namespace SDK
                     { Keys.default_x2_coin_level, 13 },
                     { Keys.key_inter_capping, 30 },
                     { Keys.key_inter_capping_after_reward, 30 },
+                    { Keys.key_inter_priority_config, "{\"interPriorityUnits\":2,\"interPriorityRetryDelay\":20,\"interPriorityFallbackBefore\":10}" },
                 };
 
             FirebaseRemoteConfig remoteConfig = FirebaseRemoteConfig.DefaultInstance;

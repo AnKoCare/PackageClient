@@ -61,3 +61,19 @@ SDKGameHooks.IsBannerAllowed = BannerPolicy.IsBannerAllowed;
 SDKGameHooks.ShowError = msg => UIManager.Instance.ShowError(msg);
 SDKGameHooks.GrantProductById = IAPRewardDelivery.GrantByProductId;
 ```
+
+## Inter ưu tiên trong capping (từ 1.2.5)
+
+`MaxMediationController` (sample) load inter theo thứ tự `interstitialAdsUnit` (unit 1 = floor cao nhất), port từ Skewer:
+
+- Capping (`AdsController.InterCooldown`) còn > `interPriorityFallbackBefore` giây: chỉ thử `interPriorityUnits` unit đầu. Unit nào có ads thì giữ sẵn, hết capping mới show. Cả nhóm no-fill thì chờ `interPriorityRetryDelay` giây rồi thử lại từ unit 1.
+- Tới mốc còn `interPriorityFallbackBefore` giây mà chưa có ads: chuyển sang luồng thường, load tiếp unit sau đó.
+- Capping ≤ `interPriorityFallbackBefore` (hoặc đã hết): luồng thường, load tuần tự unit 1 → cuối.
+
+Tham số nằm trên `AdsController` (InterPriorityUnits / InterPriorityRetryDelay / InterPriorityFallbackBefore), Remote Config key `inter_priority_config` ghi đè, cùng tên field với `ads_config` của Skewer:
+
+```json
+{"interPriorityUnits":2,"interPriorityRetryDelay":20,"interPriorityFallbackBefore":10}
+```
+
+`interPriorityUnits = 0` tắt chế độ ưu tiên.
