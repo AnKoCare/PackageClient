@@ -1049,6 +1049,13 @@ namespace SDK {
                 bannerAdsDisplayedFailedCallback,
                 bannerAdsClickedCallback);
             SDKDebugLogger.Log("Banner MAX Init ID = " + m_MaxAdConfig.BannerAdUnitID);
+            // Chua co ad unit banner: MAX SDK nem IllegalArgumentException "No Ad Unit ID specified" tren main thread
+            // (crash app) khi CreateBanner/LoadAd voi ID rong -> bo qua toan bo banner.
+            if (string.IsNullOrEmpty(m_MaxAdConfig.BannerAdUnitID))
+            {
+                SDKDebugLogger.Log("Banner MAX: chua cau hinh ad unit -> bo qua");
+                return;
+            }
             MaxSdk.CreateBanner(m_MaxAdConfig.BannerAdUnitID, m_BannerPosition);
             //MaxSdk.SetBannerBackgroundColor(m_MaxAdConfig.BannerAdUnitID, Color.black);
 
@@ -1207,6 +1214,8 @@ namespace SDK {
             MaxSdkCallbacks.MRec.OnAdExpandedEvent    += OnMRecAdExpandedEvent;
             MaxSdkCallbacks.MRec.OnAdCollapsedEvent   += OnMRecAdCollapsedEvent;
             MaxSdkCallbacks.MRec.OnAdRevenuePaidEvent += (adUnitID, adInfo) => { OnAdRevenuePaidEvent(AdsType.MREC, adUnitID, adInfo);};
+            // ID rong -> MAX crash ("No Ad Unit ID specified"), xem InitBannerAds.
+            if (string.IsNullOrEmpty(m_MaxAdConfig.MrecAdUnitID)) return;
             MaxSdk.CreateMRec(m_MaxAdConfig.MrecAdUnitID, MaxSdkBase.AdViewPosition.BottomCenter);
         }
         public override bool IsMRecLoaded()
@@ -1240,11 +1249,13 @@ namespace SDK {
         public override void ShowMRecAds()
         {
             base.ShowMRecAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.MrecAdUnitID)) return;
             MaxSdk.ShowMRec(m_MaxAdConfig.MrecAdUnitID);
         }
         public override void HideMRecAds()
         {
             base.HideMRecAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.MrecAdUnitID)) return;
             MaxSdk.HideMRec(m_MaxAdConfig.MrecAdUnitID);
         }
         #endregion
@@ -1269,14 +1280,17 @@ namespace SDK {
         public override void ShowAppOpenAds()
         {
             base.ShowAppOpenAds();
+            if (string.IsNullOrEmpty(m_MaxAdConfig.AppOpenAdUnitID)) return;
             MaxSdk.ShowAppOpenAd(m_MaxAdConfig.AppOpenAdUnitID);
         }
         public override void RequestAppOpenAds()
         {
+            if (string.IsNullOrEmpty(m_MaxAdConfig.AppOpenAdUnitID)) return;
             MaxSdk.LoadAppOpenAd(m_MaxAdConfig.AppOpenAdUnitID);
         }
         public override bool IsAppOpenAdsLoaded()
         {
+            if (string.IsNullOrEmpty(m_MaxAdConfig.AppOpenAdUnitID)) return false;
             return MaxSdk.IsAppOpenAdReady(m_MaxAdConfig.AppOpenAdUnitID);
         }
         private void OnAppOpenAdLoadedEvent(string adUnitID, MaxSdkBase.AdInfo adInfo)
