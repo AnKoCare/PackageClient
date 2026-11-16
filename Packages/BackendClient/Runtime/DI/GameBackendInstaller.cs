@@ -84,6 +84,10 @@ namespace GameBackendModule.DI
                 .To<CloudSaveService>()
                 .AsSingle();
 
+            Container.Bind<IIapService>()
+                .To<IapService>()
+                .AsSingle();
+
             // Bind Game Backend Manager
             Container.Bind<IGameBackendManager>()
                 .To<GameBackendManager>()

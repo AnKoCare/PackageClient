@@ -36,6 +36,9 @@ namespace GameBackendModule.Models
         /// <summary>POST purge-by-uid — Bearer JWT (chủ tài khoản hoặc admin).</summary>
         public const string USERS_PURGE_BY_UID_ENDPOINT = "/api/v1/users/purge-by-uid";
 
+        // IAP (Bearer JWT — docs/IAP_SERVER_VERIFY_PLAN.md ở repo game-backend).
+        public const string IAP_ANDROID_VERIFY_ENDPOINT = "/api/v1/iap/android/verify";
+
         // Weekly contest (Bearer JWT)
         public const string WEEKLY_CONTEST_STATUS_ENDPOINT = "/api/v1/weekly-contest/status";
         public const string WEEKLY_CONTEST_CLAIM_ENDPOINT = "/api/v1/weekly-contest/claim";

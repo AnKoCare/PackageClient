@@ -15,6 +15,11 @@ namespace GameBackendModule.Services
         IEnumerator Get<T>(string endpoint, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError);
         IEnumerator GetRaw(string endpoint, Action<string, int, string> onSuccess, Action<ErrorResponse> onError);
         IEnumerator Post<T>(string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError, IReadOnlyDictionary<string, string> extraHeaders = null);
+        /// <summary>
+        /// Như <see cref="Post{T}"/> nhưng huỷ request sau <paramref name="timeoutSeconds"/> giây
+        /// (onError với statusCode 0). Các request khác vẫn không giới hạn thời gian như cũ.
+        /// </summary>
+        IEnumerator PostWithTimeout<T>(string endpoint, object data, int timeoutSeconds, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError);
         IEnumerator Put<T>(string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError);
         IEnumerator Patch<T>(string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError);
         IEnumerator Delete<T>(string endpoint, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError);
@@ -94,6 +99,11 @@ namespace GameBackendModule.Services
             yield return SendRequest<T>(UnityWebRequest.kHttpVerbPOST, endpoint, data, onSuccess, onError, extraHeaders);
         }
 
+        public IEnumerator PostWithTimeout<T>(string endpoint, object data, int timeoutSeconds, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError)
+        {
+            yield return SendRequest<T>(UnityWebRequest.kHttpVerbPOST, endpoint, data, onSuccess, onError, null, timeoutSeconds);
+        }
+
         public IEnumerator Put<T>(string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError)
         {
             yield return SendRequest<T>(UnityWebRequest.kHttpVerbPUT, endpoint, data, onSuccess, onError, null);
@@ -109,10 +119,14 @@ namespace GameBackendModule.Services
             yield return SendRequest<T>(UnityWebRequest.kHttpVerbDELETE, endpoint, null, onSuccess, onError, null);
         }
 
-        private IEnumerator SendRequest<T>(string method, string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError, IReadOnlyDictionary<string, string> extraHeaders)
+        private IEnumerator SendRequest<T>(string method, string endpoint, object data, Action<ApiResponse<T>> onSuccess, Action<ErrorResponse> onError, IReadOnlyDictionary<string, string> extraHeaders, int timeoutSeconds = 0)
         {
             string url = baseUrl + endpoint;
             UnityWebRequest request = new UnityWebRequest(url, method);
+            if (timeoutSeconds > 0)
+            {
+                request.timeout = timeoutSeconds;
+            }
 
             // Set headers
             request.SetRequestHeader(ApiConstants.CONTENT_TYPE_HEADER, ApiConstants.CONTENT_TYPE_JSON);
