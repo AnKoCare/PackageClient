@@ -80,6 +80,10 @@ namespace GameBackendModule.DI
                 .To<RoyalLeagueService>()
                 .AsSingle();
 
+            Container.Bind<IStreakRaceService>()
+                .To<StreakRaceService>()
+                .AsSingle();
+
             Container.Bind<ICloudSaveService>()
                 .To<CloudSaveService>()
                 .AsSingle();

@@ -61,6 +61,13 @@ namespace GameBackendModule.Models
         /// <summary>POST — ghi nhận đã nhận thưởng. Server KHÔNG trả nội dung thưởng.</summary>
         public const string ROYAL_LEAGUE_CLAIM_ENDPOINT = "/api/v1/royal-league/claim";
 
+        // Streak Race — tất cả cần Bearer JWT (game-backend docs/STREAK_RACE_PLAN.md)
+        public const string STREAK_RACE_STATUS_ENDPOINT = "/api/v1/streak-race/status";
+        public const string STREAK_RACE_SUBMIT_ENDPOINT = "/api/v1/streak-race/submit";
+        public const string STREAK_RACE_LEADERBOARD_ENDPOINT = "/api/v1/streak-race/leaderboard";
+        public const string STREAK_RACE_RESULT_ENDPOINT = "/api/v1/streak-race/result";
+        public const string STREAK_RACE_CLAIM_ENDPOINT = "/api/v1/streak-race/claim";
+
         /// <summary>Trần server cho GET /royal-league/leaderboard (bảng chỉ tính tới hạng 1000).</summary>
         public const int ROYAL_LEAGUE_MAX_TOP_LIMIT = 1000;
 
