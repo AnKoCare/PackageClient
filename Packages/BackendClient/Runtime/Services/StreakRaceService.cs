@@ -104,10 +104,10 @@ namespace GameBackendModule.Services
                 onError?.Invoke(LocalError("roundId is required"));
                 yield break;
             }
-            // Server chỉ cấp chỗ cho người đã thắng ít nhất một trận trong vòng.
-            if (winsTotal < 1 || flagsTotal < 0)
+            // winsTotal = 0 là chỉ xin chỗ (nút Join trên bảng), chưa có trận thắng nào.
+            if (winsTotal < 0 || flagsTotal < 0)
             {
-                onError?.Invoke(LocalError("winsTotal must be >= 1 and flagsTotal >= 0"));
+                onError?.Invoke(LocalError("winsTotal and flagsTotal must be >= 0"));
                 yield break;
             }
 
