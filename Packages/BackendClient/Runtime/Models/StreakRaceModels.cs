@@ -53,6 +53,8 @@ namespace GameBackendModule.Models
         public string seatToken;
         public int winsTotal;
         public int flagsTotal;
+        /// <summary>Trận thắng gần nhất cách lúc gửi bao nhiêu giây (0 = vừa thắng, hoặc chỉ xin chỗ).</summary>
+        public int agoSeconds;
     }
 
     [Serializable]

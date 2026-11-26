@@ -30,6 +30,8 @@ namespace GameBackendModule.Services
         /// <summary>
         /// POST /streak-race/submit — nộp TỔNG số trận thắng và TỔNG số cờ của vòng.
         /// <paramref name="seatToken"/> null ở lần đầu; server cấp chỗ và trả vé.
+        /// <paramref name="agoSeconds"/>: trận thắng gần nhất cách lúc gửi bao nhiêu giây, để server
+        /// xếp đúng "ai đạt số cờ này trước" khi bằng cờ dù máy nộp gộp vài phút một lần.
         /// </summary>
         IEnumerator Submit(
             int roundId,
@@ -37,7 +39,8 @@ namespace GameBackendModule.Services
             int winsTotal,
             int flagsTotal,
             Action<ApiResponse<StreakRaceSubmitResponse>> onSuccess,
-            Action<ErrorResponse> onError);
+            Action<ErrorResponse> onError,
+            int agoSeconds = 0);
 
         /// <summary>POST /streak-race/leaderboard — bảng của mình trong vòng (gồm cả bot).</summary>
         IEnumerator GetLeaderboard(
@@ -97,7 +100,8 @@ namespace GameBackendModule.Services
             int winsTotal,
             int flagsTotal,
             Action<ApiResponse<StreakRaceSubmitResponse>> onSuccess,
-            Action<ErrorResponse> onError)
+            Action<ErrorResponse> onError,
+            int agoSeconds = 0)
         {
             if (roundId < 1)
             {
@@ -117,6 +121,7 @@ namespace GameBackendModule.Services
                 seatToken = string.IsNullOrEmpty(seatToken) ? null : seatToken,
                 winsTotal = winsTotal,
                 flagsTotal = flagsTotal,
+                agoSeconds = Math.Max(0, agoSeconds),
             };
             yield return apiClient.Post(ApiConstants.STREAK_RACE_SUBMIT_ENDPOINT, body, onSuccess, onError);
         }
